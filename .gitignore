@@ -1,7 +1,49 @@
-.env
-requirements.txt
 venv*
-node_modules
-logs/*
-prisma/migrations/*
 TEST.md
+
+# Node modules
+node_modules/
+
+# Environment variables (contains secrets)
+.env
+.env.local
+.env.*.local
+
+# Logs (runtime data, should not be committed)
+logs/
+*.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# IDE files
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# Build outputs
+dist/
+build/
+.next/
+out/
+
+# Test coverage
+coverage/
+.nyc_output/
+
+# Temporary files
+.tmp/
+temp/
+
+# Prisma - DO NOT ignore migrations!
+# prisma/migrations/*  ❌ NEVER ignore this!
+
+# Optional: Ignore Prisma generated files if team regenerates locally
+# node_modules/.prisma/
+# node_modules/@prisma/
