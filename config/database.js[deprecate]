@@ -1,0 +1,45 @@
+/**
+ * @fileoverview PostgreSQL connection pool configuration using pg library.
+ * Creates a singleton pool instance for database connections.
+ * @module config/database
+ */
+
+import pg from 'pg';
+import dotenv from 'dotenv';
+import logger from './logging.js';
+
+dotenv.config();
+
+const { Pool } = pg;
+
+/**
+ * PostgreSQL connection pool instance
+ * @type {pg.Pool}
+ * @constant
+ */
+const pool = new Pool({
+  host: process.env.DB_HOST || 'localhost',
+  port: process.env.DB_PORT || 5432,
+  database: process.env.DB_NAME || 'tracing_db',
+  user: process.env.DB_USER || 'postgres',
+  password: process.env.DB_PASSWORD || 'postgres',
+  max: 20, // Maximum number of connections in pool
+  idleTimeoutMillis: 30000, // Close idle connections after 30 seconds
+  connectionTimeoutMillis: 2000, // Timeout for acquiring connection
+});
+
+/**
+ * Event listener for successful database connections
+ */
+pool.on('connect', () => {
+  logger.info('Database connection established');
+});
+
+/**
+ * Event listener for database errors
+ */
+pool.on('error', (err) => {
+  logger.error('Unexpected database error', { error: err.message });
+});
+
+export default pool;

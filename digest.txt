@@ -1,0 +1,2807 @@
+Directory structure:
+└── app-observability/
+    ├── app.js
+    ├── requirements.txt
+    ├── server.js
+    ├── config/
+    │   ├── database.js
+    │   ├── database.js[deprecate]
+    │   ├── logging.js
+    │   ├── metrics.js
+    │   └── tracing.js
+    ├── controllers/
+    │   ├── authController.js
+    │   ├── chaosController.js
+    │   └── userController.js
+    ├── middleware/
+    │   ├── errorHandler.js
+    │   ├── traceContext.js
+    │   └── validation.js
+    ├── models/
+    │   └── userModel.js
+    ├── prisma/
+    │   ├── schema.prisma
+    │   └── seed.js
+    ├── routes/
+    │   ├── authRoutes.js
+    │   ├── chaosRoutes.js
+    │   └── userRoutes.js
+    ├── services/
+    │   ├── authService.js
+    │   ├── chaosService.js
+    │   ├── databaseService.js
+    │   └── userService.js
+    ├── validators/
+    │   └── userValidator.js
+    └── venv_app-observe/
+        ├── pyvenv.cfg
+        └── lib64 -> lib
+
+================================================
+FILE: app.js
+================================================
+/**
+ * @fileoverview Main Express application configuration.
+ * Sets up middleware, routes, error handling, and observability endpoints.
+ * @module app
+ */
+
+import express from 'express';
+import authRoutes from './routes/authRoutes.js';
+import userRoutes from './routes/userRoutes.js';
+import chaosRoutes from './routes/chaosRoutes.js';
+import traceContextMiddleware from './middleware/traceContext.js';
+import errorHandler from './middleware/errorHandler.js';
+// import logger from './config/logging.js';
+import { recordHttpRequest, promRegister } from './config/metrics.js';
+
+/**
+ * Express application instance
+ * @type {import('express').Application}
+ */
+const app = express();
+
+// ============ MIDDLEWARE ============
+
+/**
+ * Parse JSON request bodies
+ */
+app.use(express.json());
+
+/**
+ * Parse URL-encoded request bodies
+ */
+app.use(express.urlencoded({ extended: true }));
+
+/**
+ * Inject OpenTelemetry trace context into requests
+ */
+app.use(traceContextMiddleware);
+
+/**
+ * Metrics middleware - records HTTP request metrics
+ * @param {import('express').Request} req - Express request
+ * @param {import('express').Response} res - Express response
+ * @param {import('express').NextFunction} next - Next middleware
+ */
+app.use((req, res, next) => {
+  const start = Date.now();
+  
+  res.on('finish', () => {
+    const duration = (Date.now() - start) / 1000;
+    recordHttpRequest(req.method, req.route?.path || req.path, res.statusCode, duration);
+  });
+  
+  next();
+});
+
+// ============ ROUTES ============
+
+/**
+ * Health check endpoint
+ * @name GET /health
+ * @function
+ * @returns {Object} Health status and timestamp
+ */
+app.get('/health', (req, res) => {
+  res.status(200).json({
+    status: 'healthy',
+    timestamp: new Date().toISOString()
+  });
+});
+
+/**
+ * Custom Prometheus metrics endpoint with exemplars
+ * @name GET /metrics-custom
+ * @function
+ * @returns {string} Prometheus metrics in text format
+ */
+app.get('/metrics-custom', async (req, res) => {
+  try {
+    res.set('Content-Type', promRegister.contentType);
+    const metrics = await promRegister.metrics();
+    res.end(metrics);
+  } catch (error) {
+    res.status(500).end(error);
+  }
+});
+
+/**
+ * Mount API routes
+ */
+app.use('/api/auth', authRoutes);
+app.use('/api/users', userRoutes);
+app.use('/api/chaos', chaosRoutes);
+
+/**
+ * 404 handler for unmatched routes
+ */
+app.use((req, res) => {
+  res.status(404).json({
+    success: false,
+    message: 'Route not found',
+  });
+});
+
+/**
+ * Global error handler middleware (must be last)
+ */
+app.use(errorHandler);
+
+export default app;
+
+
+
+================================================
+FILE: requirements.txt
+================================================
+annotated-types==0.7.0
+anyio==4.12.0
+certifi==2025.11.12
+charset-normalizer==3.4.4
+click==8.3.1
+exceptiongroup==1.3.1
+gitingest==0.3.1
+h11==0.16.0
+httpcore==1.0.9
+httpx==0.28.1
+idna==3.11
+loguru==0.7.3
+pathspec==0.12.1
+pydantic==2.12.5
+pydantic_core==2.41.5
+python-dotenv==1.2.1
+regex==2025.11.3
+requests==2.32.5
+starlette==0.50.0
+StrEnum==0.4.15
+tiktoken==0.12.0
+typing-inspection==0.4.2
+typing_extensions==4.15.0
+urllib3==2.6.2
+
+
+
+================================================
+FILE: server.js
+================================================
+/**
+ * @fileoverview Server entry point.
+ * Starts the HTTP server and handles graceful shutdown.
+ * @module server
+ */
+
+import app from './app.js';
+import logger from './config/logging.js';
+import dotenv from 'dotenv';
+
+dotenv.config();
+
+/**
+ * Server port number
+ * @type {number}
+ */
+const PORT = process.env.PORT || 3000;
+
+/**
+ * HTTP server instance
+ * @type {import('http').Server}
+ */
+const server = app.listen(PORT, () => {
+  logger.info(`Server started on port ${PORT}`);
+  logger.info(`Health check: http://localhost:${PORT}/health`);
+  logger.info(`Custom metrics: http://localhost:${PORT}/metrics-custom`);
+  logger.info(`OpenTelemetry metrics: http://localhost:${process.env.METRICS_PORT || 9464}/metrics`);
+});
+
+/**
+ * Graceful shutdown handler
+ * Closes HTTP server and exits process
+ */
+process.on('SIGTERM', () => {
+  logger.info('SIGTERM signal received: closing HTTP server');
+  server.close(() => {
+    logger.info('HTTP server closed');
+  });
+});
+
+
+
+================================================
+FILE: config/database.js
+================================================
+/**
+ * @fileoverview Prisma Client singleton configuration.
+ * Provides centralized database access for the application.
+ * @module config/database
+ */
+
+import { PrismaClient } from '@prisma/client';
+import logger from './logging.js';
+
+/**
+ * Prisma Client instance with query logging
+ * @type {PrismaClient}
+ * @constant
+ */
+const prisma = new PrismaClient({
+  log: [
+    { level: 'query', emit: 'event' },
+    { level: 'error', emit: 'event' },
+    { level: 'info', emit: 'event' },
+    { level: 'warn', emit: 'event' },
+  ],
+});
+
+/**
+ * Log all queries with Winston
+ */
+prisma.$on('query', (e) => {
+  logger.debug('Prisma Query', {
+    query: e.query,
+    params: e.params,
+    duration: `${e.duration}ms`,
+  });
+});
+
+/**
+ * Log errors
+ */
+prisma.$on('error', (e) => {
+  logger.error('Prisma Error', { error: e.message });
+});
+
+/**
+ * Log connection events
+ */
+prisma.$on('info', (e) => {
+  logger.info('Prisma Info', { message: e.message });
+});
+
+/**
+ * Handle application shutdown
+ */
+process.on('beforeExit', async () => {
+  await prisma.$disconnect();
+  logger.info('Prisma Client disconnected');
+});
+
+export default prisma;
+
+
+
+================================================
+FILE: config/database.js[deprecate]
+================================================
+/**
+ * @fileoverview PostgreSQL connection pool configuration using pg library.
+ * Creates a singleton pool instance for database connections.
+ * @module config/database
+ */
+
+import pg from 'pg';
+import dotenv from 'dotenv';
+import logger from './logging.js';
+
+dotenv.config();
+
+const { Pool } = pg;
+
+/**
+ * PostgreSQL connection pool instance
+ * @type {pg.Pool}
+ * @constant
+ */
+const pool = new Pool({
+  host: process.env.DB_HOST || 'localhost',
+  port: process.env.DB_PORT || 5432,
+  database: process.env.DB_NAME || 'tracing_db',
+  user: process.env.DB_USER || 'postgres',
+  password: process.env.DB_PASSWORD || 'postgres',
+  max: 20, // Maximum number of connections in pool
+  idleTimeoutMillis: 30000, // Close idle connections after 30 seconds
+  connectionTimeoutMillis: 2000, // Timeout for acquiring connection
+});
+
+/**
+ * Event listener for successful database connections
+ */
+pool.on('connect', () => {
+  logger.info('Database connection established');
+});
+
+/**
+ * Event listener for database errors
+ */
+pool.on('error', (err) => {
+  logger.error('Unexpected database error', { error: err.message });
+});
+
+export default pool;
+
+
+
+================================================
+FILE: config/logging.js
+================================================
+/**
+ * @fileoverview Winston logger configuration with OpenTelemetry trace context injection.
+ * Provides structured logging with trace ID and span ID in every log entry.
+ * @module config/logging
+ */
+
+import winston from 'winston';
+import dotenv from 'dotenv';
+import { trace, context } from '@opentelemetry/api';
+
+dotenv.config();
+
+const { combine, timestamp, printf, colorize, errors } = winston.format;
+
+/**
+ * Custom log format with trace context
+ * @type {winston.Logform.Format}
+ */
+const traceFormat = printf(({ level, message, timestamp, traceId, spanId, ...metadata }) => {
+  const meta = Object.keys(metadata).length ? JSON.stringify(metadata) : '';
+  return `${timestamp} [${level}] [TraceID: ${traceId || 'N/A'}] [SpanID: ${spanId || 'N/A'}]: ${message} ${meta}`;
+});
+
+/**
+ * Winston format to add OpenTelemetry trace context to logs
+ * @returns {winston.Logform.Format} Winston format instance
+ */
+const addTraceContext = winston.format((info) => {
+  const span = trace.getSpan(context.active());
+  if (span) {
+    const spanContext = span.spanContext();
+    info.traceId = spanContext.traceId;
+    info.spanId = spanContext.spanId;
+  }
+  return info;
+});
+
+/**
+ * Create a Winston logger instance with specified log level
+ * @param {string} [logLevel='info'] - Minimum log level to output
+ * @returns {winston.Logger} Configured Winston logger instance
+ * 
+ * @example
+ * const logger = createLogger('debug');
+ * logger.debug('Debug message');
+ */
+const createLogger = (logLevel = 'info') => {
+  return winston.createLogger({
+    level: logLevel,
+    format: combine(
+      errors({ stack: true }),
+      timestamp({ format: 'YYYY-MM-DD HH:mm:ss' }),
+      addTraceContext(),
+      traceFormat
+    ),
+    transports: [
+      new winston.transports.Console({
+        format: combine(
+          colorize(),
+          traceFormat
+        ),
+      }),
+      new winston.transports.File({
+        filename: process.env.LOG_FILE_PATH || './logs/app.log',
+        maxsize: 5242880, // 5MB
+        maxFiles: 5,
+      }),
+    ],
+  });
+};
+
+/**
+ * Default logger instance
+ * @type {winston.Logger}
+ * @constant
+ */
+const logger = createLogger(process.env.LOG_LEVEL || 'info');
+
+export default logger;
+
+
+
+================================================
+FILE: config/metrics.js
+================================================
+/**
+ * @fileoverview OpenTelemetry metrics and Prometheus exporter configuration.
+ * Provides metrics instrumentation with exemplar support linking metrics to traces.
+ * Implements dual metrics strategy: OpenTelemetry auto-instrumentation (port 9464)
+ * and custom prom-client metrics with exemplars (port 3000).
+ * @module config/metrics
+ */
+
+import { metrics, trace, context } from '@opentelemetry/api';
+import { PrometheusExporter } from '@opentelemetry/exporter-prometheus';
+import { MeterProvider } from '@opentelemetry/sdk-metrics';
+import { Resource } from '@opentelemetry/resources';
+import { ATTR_SERVICE_NAME, ATTR_SERVICE_VERSION } from '@opentelemetry/semantic-conventions';
+import client from 'prom-client';
+import dotenv from 'dotenv';
+
+dotenv.config();
+
+// ============ OPENTELEMETRY METRICS (Port 9464) ============
+// These are auto-exported but DON'T support exemplars
+
+/**
+ * OpenTelemetry Resource with service metadata
+ * Provides service name and version for metric identification
+ * @type {Resource}
+ * @constant
+ */
+const resource = new Resource({
+  [ATTR_SERVICE_NAME]: process.env.SERVICE_NAME || 'tracing-app',
+  [ATTR_SERVICE_VERSION]: process.env.SERVICE_VERSION || '1.0.0',
+});
+
+/**
+ * Prometheus Exporter for OpenTelemetry metrics
+ * Exposes metrics at http://localhost:9464/metrics
+ * These metrics do NOT support exemplars due to OpenTelemetry limitation
+ * @type {PrometheusExporter}
+ * @constant
+ */
+const prometheusExporter = new PrometheusExporter({
+  port: parseInt(process.env.METRICS_PORT) || 9464,
+}, () => {
+  console.log(`Prometheus metrics available at http://localhost:${process.env.METRICS_PORT || 9464}/metrics`);
+});
+
+/**
+ * OpenTelemetry MeterProvider
+ * Manages metric instruments and exports to Prometheus
+ * @type {MeterProvider}
+ * @constant
+ */
+const meterProvider = new MeterProvider({
+  resource,
+  readers: [prometheusExporter],
+});
+
+// Set global meter provider for auto-instrumentation
+metrics.setGlobalMeterProvider(meterProvider);
+
+/**
+ * Meter instance for creating metric instruments
+ * @type {Meter}
+ * @constant
+ */
+const meter = meterProvider.getMeter('app-metrics');
+
+/**
+ * HTTP request duration histogram (OpenTelemetry)
+ * Tracks duration of HTTP requests in seconds
+ * @type {Histogram}
+ * @constant
+ * @note Does NOT support exemplars - use httpDurationHistogram for exemplar support
+ */
+const httpRequestDuration_OTEL = meter.createHistogram('http_request_duration_seconds', {
+  description: 'Duration of HTTP requests in seconds',
+  unit: 'seconds',
+});
+
+/**
+ * HTTP request counter (OpenTelemetry)
+ * Tracks total number of HTTP requests
+ * @type {Counter}
+ * @constant
+ * @note Does NOT support exemplars - use httpRequestCounterCustom for exemplar support
+ */
+const httpRequestCounter_OTEL = meter.createCounter('http_requests_total', {
+  description: 'Total number of HTTP requests',
+});
+
+/**
+ * Database query duration histogram (OpenTelemetry)
+ * Tracks duration of database queries in seconds
+ * @type {Histogram}
+ * @constant
+ * @note Does NOT support exemplars - use dbQueryHistogram for exemplar support
+ */
+const databaseQueryDuration_OTEL = meter.createHistogram('database_query_duration_seconds', {
+  description: 'Duration of database queries in seconds',
+  unit: 'seconds',
+});
+
+/**
+ * Active users counter (OpenTelemetry)
+ * Tracks current number of active users in the system
+ * @type {UpDownCounter}
+ * @constant
+ * @note Gauges/UpDownCounters don't support exemplars by design (point-in-time values)
+ */
+const activeUsers = meter.createUpDownCounter('active_users_total', {
+  description: 'Total number of active users',
+});
+
+// ============ CUSTOM PROM-CLIENT METRICS (Port 3000) ============
+// These DO support exemplars (trace links)
+
+/**
+ * Custom Prometheus registry for prom-client metrics
+ * Separate from OpenTelemetry registry to enable exemplar support
+ * Exposed at http://localhost:3000/metrics-custom
+ * @type {Registry}
+ * @constant
+ */
+const promRegister = new client.Registry();
+
+/**
+ * HTTP request duration histogram WITH EXEMPLARS
+ * Tracks HTTP request latency and links data points to traces
+ * Labels: method (GET/POST/etc), route (/api/users), status_code (200/404/etc)
+ * @type {Histogram}
+ * @constant
+ * @example
+ * // Recorded automatically by recordHttpRequest()
+ * // Prometheus query: histogram_quantile(0.95, http_request_duration_seconds_custom)
+ */
+const httpDurationHistogram = new client.Histogram({
+  name: 'http_request_duration_seconds_custom',
+  help: 'Duration of HTTP requests in seconds with exemplars',
+  labelNames: ['method', 'route', 'status_code'],
+  buckets: [0.001, 0.01, 0.1, 0.5, 1, 2, 5],
+  enableExemplars: true,
+  registers: [promRegister],
+});
+
+/**
+ * HTTP request counter WITH EXEMPLARS
+ * Tracks total HTTP requests and links spikes to specific traces
+ * Labels: method (GET/POST/etc), route (/api/users), status_code (200/404/etc)
+ * @type {Counter}
+ * @constant
+ * @example
+ * // Recorded automatically by recordHttpRequest()
+ * // Prometheus query: rate(http_requests_total_custom[5m])
+ */
+const httpRequestCounterCustom = new client.Counter({
+  name: 'http_requests_total_custom',
+  help: 'Total number of HTTP requests with exemplars',
+  labelNames: ['method', 'route', 'status_code'],
+  enableExemplars: true,
+  registers: [promRegister],
+});
+
+/**
+ * Database query duration histogram WITH EXEMPLARS
+ * Tracks database query latency and links slow queries to traces
+ * Labels: operation (CREATE/READ/UPDATE/DELETE), table (users/posts/etc)
+ * @type {Histogram}
+ * @constant
+ * @example
+ * // Recorded by recordDatabaseQuery()
+ * // Prometheus query: histogram_quantile(0.99, database_query_duration_seconds_custom)
+ */
+const dbQueryHistogram = new client.Histogram({
+  name: 'database_query_duration_seconds_custom',
+  help: 'Duration of database queries with exemplars',
+  labelNames: ['operation', 'table'],
+  buckets: [0.001, 0.01, 0.05, 0.1, 0.5, 1],
+  enableExemplars: true,
+  registers: [promRegister],
+});
+
+/**
+ * Application error counter WITH EXEMPLARS
+ * Tracks errors and links error spikes to failing traces
+ * Labels: error_type (ValidationError/DatabaseError/etc), route (/api/users)
+ * @type {Counter}
+ * @constant
+ * @example
+ * // Recorded by recordError()
+ * // Prometheus query: sum(rate(application_errors_total[5m])) by (error_type)
+ */
+const errorCounter = new client.Counter({
+  name: 'application_errors_total',
+  help: 'Total number of application errors with exemplars',
+  labelNames: ['error_type', 'route'],
+  enableExemplars: true,
+  registers: [promRegister],
+});
+
+// ============ RECORDING FUNCTIONS ============
+
+/**
+ * Record HTTP request metrics with trace exemplar
+ * Records both OpenTelemetry metrics (no exemplar) and custom metrics (with exemplar)
+ * Automatically extracts trace context from active span
+ * @param {string} method - HTTP method (GET, POST, PUT, DELETE, etc)
+ * @param {string} route - Express route path (/api/users/:id)
+ * @param {number} statusCode - HTTP status code (200, 404, 500, etc)
+ * @param {number} duration - Request duration in seconds
+ * @returns {void}
+ * 
+ * @example
+ * // Called automatically by metrics middleware in app.js
+ * recordHttpRequest('POST', '/api/users', 201, 0.145);
+ * 
+ * @example
+ * // Results in Prometheus metrics:
+ * // http_requests_total_custom{method="POST",route="/api/users",status_code="201"} 1
+ * // http_request_duration_seconds_custom{method="POST",route="/api/users",status_code="201"} 0.145
+ * // With exemplar: {traceId="abc123...", spanId="xyz789..."}
+ */
+const recordHttpRequest = (method, route, statusCode, duration) => {
+  // Record OpenTelemetry metrics (no exemplars)
+  httpRequestCounter_OTEL.add(1, { method, route, status_code: statusCode });
+  httpRequestDuration_OTEL.record(duration, { method, route, status_code: statusCode });
+
+  // Get current span for exemplar
+  const span = trace.getSpan(context.active());
+  const exemplarLabels = {};
+  
+  if (span) {
+    const spanContext = span.spanContext();
+    exemplarLabels.traceId = spanContext.traceId;
+    exemplarLabels.spanId = spanContext.spanId;
+  }
+
+  // Record prom-client metrics with exemplars
+  httpRequestCounterCustom.inc(
+    { method, route, status_code: statusCode },
+    1,
+    exemplarLabels
+  );
+  
+  httpDurationHistogram.observe(
+    { method, route, status_code: statusCode },
+    duration,
+    exemplarLabels
+  );
+};
+
+/**
+ * Record database query metrics with trace exemplar
+ * Records both OpenTelemetry metrics (no exemplar) and custom metrics (with exemplar)
+ * Automatically extracts trace context from active span
+ * @param {string} operation - Database operation type (CREATE, READ, UPDATE, DELETE, RAW_SQL)
+ * @param {string} table - Database table name (users, posts, etc)
+ * @param {number} duration - Query duration in seconds
+ * @returns {void}
+ * 
+ * @example
+ * // Called by databaseService or models
+ * recordDatabaseQuery('CREATE', 'users', 0.052);
+ * recordDatabaseQuery('RAW_SQL', 'multiple', 0.123);
+ * 
+ * @example
+ * // Results in Prometheus metrics:
+ * // database_query_duration_seconds_custom{operation="CREATE",table="users"} 0.052
+ * // With exemplar: {traceId="abc123...", spanId="xyz789..."}
+ */
+const recordDatabaseQuery = (operation, table, duration) => {
+  // OpenTelemetry metric
+  databaseQueryDuration_OTEL.record(duration, { operation, table });
+
+  // Get exemplar
+  const span = trace.getSpan(context.active());
+  const exemplarLabels = {};
+  
+  if (span) {
+    const spanContext = span.spanContext();
+    exemplarLabels.traceId = spanContext.traceId;
+    exemplarLabels.spanId = spanContext.spanId;
+  }
+
+  // prom-client metric with exemplar
+  dbQueryHistogram.observe({ operation, table }, duration, exemplarLabels);
+};
+
+/**
+ * Record application error with trace exemplar
+ * Links error occurrences to the trace where the error happened
+ * Automatically extracts trace context from active span
+ * @param {string} errorType - Error type/name (ValidationError, DatabaseError, UnauthorizedError, etc)
+ * @param {string} route - Route where error occurred (/api/users, /api/auth/login, etc)
+ * @returns {void}
+ * 
+ * @example
+ * // Called by error handler middleware
+ * recordError('ValidationError', '/api/users');
+ * recordError('DatabaseError', '/api/posts');
+ * 
+ * @example
+ * // Results in Prometheus metrics:
+ * // application_errors_total{error_type="ValidationError",route="/api/users"} 1
+ * // With exemplar: {traceId="abc123...", spanId="xyz789..."}
+ * // Click exemplar in Grafana → Jump to trace in Tempo showing the error
+ */
+const recordError = (errorType, route) => {
+  const span = trace.getSpan(context.active());
+  const exemplarLabels = {};
+  
+  if (span) {
+    const spanContext = span.spanContext();
+    exemplarLabels.traceId = spanContext.traceId;
+    exemplarLabels.spanId = spanContext.spanId;
+  }
+
+  errorCounter.inc({ error_type: errorType, route }, 1, exemplarLabels);
+};
+
+/**
+ * @exports
+ * @description Exports metrics and recording functions for application use
+ * 
+ * OpenTelemetry metrics (port 9464, no exemplars):
+ * - httpRequestDuration: HTTP request duration histogram
+ * - httpRequestCounter: HTTP request counter
+ * - databaseQueryDuration: Database query duration histogram
+ * - activeUsers: Active users gauge
+ * 
+ * Recording functions (auto-add exemplars):
+ * - recordHttpRequest: Record HTTP request with trace link
+ * - recordDatabaseQuery: Record database query with trace link
+ * - recordError: Record error with trace link
+ * 
+ * Registry:
+ * - promRegister: Custom registry for /metrics-custom endpoint
+ * - meterProvider: OpenTelemetry meter provider
+ */
+export {
+  // OpenTelemetry metrics (no exemplars)
+  httpRequestDuration_OTEL as httpRequestDuration,
+  httpRequestCounter_OTEL as httpRequestCounter,
+  databaseQueryDuration_OTEL as databaseQueryDuration,
+  activeUsers,
+  
+  // Recording functions (with exemplars)
+  recordHttpRequest,
+  recordDatabaseQuery,
+  recordError,
+  
+  // Registries
+  promRegister,
+  meterProvider,
+};
+
+
+
+================================================
+FILE: config/tracing.js
+================================================
+/**
+ * @fileoverview OpenTelemetry tracing configuration and SDK initialization.
+ * Configures trace export to Tempo via OTLP (HTTP or gRPC).
+ * @module config/tracing
+ */
+
+import { NodeSDK } from '@opentelemetry/sdk-node';
+import { OTLPTraceExporter as OTLPTraceExporterHTTP } from '@opentelemetry/exporter-trace-otlp-http';
+import { OTLPTraceExporter as OTLPTraceExporterGRPC } from '@opentelemetry/exporter-trace-otlp-grpc';
+import { Resource } from '@opentelemetry/resources';
+import { ATTR_SERVICE_NAME, ATTR_SERVICE_VERSION } from '@opentelemetry/semantic-conventions';
+import { getNodeAutoInstrumentations } from '@opentelemetry/auto-instrumentations-node';
+import dotenv from 'dotenv';
+
+dotenv.config();
+
+/**
+ * OTLP protocol type (http or grpc)
+ * @type {string}
+ * @constant
+ */
+const protocol = process.env.OTLP_TRACE_PROTOCOL || 'http';
+
+/**
+ * OTLP trace destination URL
+ * @type {string}
+ * @constant
+ */
+const url = process.env.OTLP_TRACE_DEST_URL || 'http://localhost:4318/v1/traces';
+
+/**
+ * Trace exporter instance (HTTP or gRPC)
+ * @type {OTLPTraceExporterHTTP|OTLPTraceExporterGRPC}
+ */
+let traceExporter;
+
+if (protocol === 'grpc') {
+  console.log('Using gRPC exporter for traces (HTTP/2)');
+  traceExporter = new OTLPTraceExporterGRPC({
+    url: url.replace('http://', '').replace('https://', ''),
+  });
+} else {
+  console.log('Using HTTP exporter for traces (HTTP/1.1)');
+  traceExporter = new OTLPTraceExporterHTTP({ url });
+}
+
+/**
+ * Service resource attributes
+ * @type {Resource}
+ * @constant
+ */
+const resource = new Resource({
+  [ATTR_SERVICE_NAME]: process.env.SERVICE_NAME || 'tracing-app',
+  [ATTR_SERVICE_VERSION]: process.env.SERVICE_VERSION || '1.0.0',
+});
+
+/**
+ * OpenTelemetry Node SDK instance
+ * @type {NodeSDK}
+ * @constant
+ */
+const sdk = new NodeSDK({
+  resource,
+  traceExporter,
+  instrumentations: [
+    getNodeAutoInstrumentations({
+      '@opentelemetry/instrumentation-fs': {
+        enabled: false, // Disable fs instrumentation to reduce noise
+      },
+    }),
+  ],
+});
+
+// Start SDK
+sdk.start();
+
+/**
+ * Graceful shutdown handler for tracing
+ */
+process.on('SIGTERM', () => {
+  sdk.shutdown()
+    .then(() => console.log('Tracing terminated'))
+    .catch((error) => console.log('Error terminating tracing', error))
+    .finally(() => process.exit(0));
+});
+
+export { sdk };
+
+
+
+================================================
+FILE: controllers/authController.js
+================================================
+/**
+ * @fileoverview Authentication controller handling login operations.
+ * @module controllers/authController
+ */
+
+import userService from '../services/userService.js';
+import logger from '../config/logging.js';
+
+/**
+ * Authentication controller class
+ * @class
+ */
+class AuthController {
+  /**
+   * Handle user login
+   * @async
+   * @param {import('express').Request} req - Express request object
+   * @param {import('express').Response} res - Express response object
+   * @param {import('express').NextFunction} next - Express next middleware
+   * @returns {Promise<void>}
+   */
+  async login(req, res, next) {
+    try {
+      const { email, password } = req.body;
+      const result = await userService.authenticateUser(email, password);
+
+      if (!result) {
+        return res.status(401).json({
+          success: false,
+          message: 'Invalid credentials',
+        });
+      }
+
+      logger.info('User logged in successfully', { userId: result.user.id });
+      res.status(200).json({
+        success: true,
+        message: 'Login successful',
+        data: result,
+      });
+    } catch (error) {
+      next(error);
+    }
+  }
+}
+
+export default new AuthController();
+
+
+
+================================================
+FILE: controllers/chaosController.js
+================================================
+/**
+ * @fileoverview Chaos engineering controller for testing system resilience.
+ * @module controllers/chaosController
+ */
+
+import chaosService from '../services/chaosService.js';
+import logger from '../config/logging.js';
+
+/**
+ * Chaos engineering controller class
+ * @class
+ */
+class ChaosController {
+  /**
+   * Configure latency injection for a service
+   * @async
+   * @param {import('express').Request} req - Express request object
+   * @param {import('express').Response} res - Express response object
+   * @param {import('express').NextFunction} next - Express next middleware
+   * @returns {Promise<void>}
+   */
+  async configureLatency(req, res, next) {
+    try {
+      const { service = 'database', duration = 1000, enabled = true } = req.body;
+      chaosService.configureLatency(service, duration, enabled);
+      
+      res.status(200).json({
+        success: true,
+        message: `Latency configured for ${service}`,
+        config: { service, duration, enabled },
+      });
+    } catch (error) {
+      next(error);
+    }
+  }
+
+  /**
+   * Configure random failure injection for a service
+   * @async
+   * @param {import('express').Request} req - Express request object
+   * @param {import('express').Response} res - Express response object
+   * @param {import('express').NextFunction} next - Express next middleware
+   * @returns {Promise<void>}
+   */
+  async configureRandomFailure(req, res, next) {
+    try {
+      const { service = 'database', probability = 0.5, enabled = true } = req.body;
+
+      if (probability < 0 || probability > 1) {
+        return res.status(400).json({
+          success: false,
+          message: 'Probability must be between 0 and 1',
+        });
+      }
+
+      chaosService.configureFailureRate(service, probability, enabled);
+      
+      res.status(200).json({
+        success: true,
+        message: `Random failures configured for ${service}`,
+        config: { service, probability, enabled },
+      });
+    } catch (error) {
+      next(error);
+    }
+  }
+
+  /**
+   * Trigger memory leak simulation
+   * @async
+   * @param {import('express').Request} req - Express request object
+   * @param {import('express').Response} res - Express response object
+   * @param {import('express').NextFunction} next - Express next middleware
+   * @returns {Promise<void>}
+   */
+  async triggerMemoryLeak(req, res, next) {
+    try {
+      const { duration = 30000 } = req.body;
+      setImmediate(() => chaosService.simulateMemoryLeak(duration));
+      
+      res.status(200).json({
+        success: true,
+        message: 'Memory leak simulation started',
+        duration,
+      });
+    } catch (error) {
+      next(error);
+    }
+  }
+
+  /**
+   * Trigger CPU spike simulation
+   * @async
+   * @param {import('express').Request} req - Express request object
+   * @param {import('express').Response} res - Express response object
+   * @param {import('express').NextFunction} next - Express next middleware
+   * @returns {Promise<void>}
+   */
+  async triggerCPUSpike(req, res, next) {
+    try {
+      const { duration = 5000 } = req.body;
+      setImmediate(() => chaosService.simulateCPUSpike(duration));
+      
+      res.status(200).json({
+        success: true,
+        message: 'CPU spike simulation started',
+        duration,
+      });
+    } catch (error) {
+      next(error);
+    }
+  }
+
+  /**
+   * Trigger database error simulation
+   * @async
+   * @param {import('express').Request} req - Express request object
+   * @param {import('express').Response} res - Express response object
+   * @param {import('express').NextFunction} next - Express next middleware
+   * @returns {Promise<void>}
+   */
+  async triggerDatabaseError(req, res, next) {
+    try {
+      const { errorType = 'CONNECTION_ERROR' } = req.body;
+      await chaosService.simulateDatabaseError(errorType);
+      res.status(200).json({ success: true });
+    } catch (error) {
+      next(error);
+    }
+  }
+
+  /**
+   * Disable all chaos engineering features
+   * @async
+   * @param {import('express').Request} req - Express request object
+   * @param {import('express').Response} res - Express response object
+   * @param {import('express').NextFunction} next - Express next middleware
+   * @returns {Promise<void>}
+   */
+  async disableAll(req, res, next) {
+    try {
+      chaosService.disableAllChaos();
+      res.status(200).json({
+        success: true,
+        message: 'All chaos features disabled',
+      });
+    } catch (error) {
+      next(error);
+    }
+  }
+
+  /**
+   * Get current chaos configuration status
+   * @async
+   * @param {import('express').Request} req - Express request object
+   * @param {import('express').Response} res - Express response object
+   * @param {import('express').NextFunction} next - Express next middleware
+   * @returns {Promise<void>}
+   */
+  async getStatus(req, res, next) {
+    try {
+      const status = chaosService.getStatus();
+      res.status(200).json({
+        success: true,
+        data: status,
+      });
+    } catch (error) {
+      next(error);
+    }
+  }
+
+  /**
+   * Test circuit breaker pattern with multiple failures
+   * @async
+   * @param {import('express').Request} req - Express request object
+   * @param {import('express').Response} res - Express response object
+   * @param {import('express').NextFunction} next - Express next middleware
+   * @returns {Promise<void>}
+   */
+  async circuitBreakerTest(req, res, next) {
+    try {
+      const errors = [];
+
+      for (let i = 0; i < 5; i++) {
+        try {
+          await chaosService.simulateDatabaseError('TIMEOUT');
+        } catch (error) {
+          errors.push({ attempt: i + 1, error: error.message });
+        }
+      }
+
+      logger.warn('Circuit breaker test completed', { errorCount: errors.length });
+      res.status(500).json({
+        success: false,
+        message: 'Circuit breaker test - multiple failures triggered',
+        errors,
+      });
+    } catch (error) {
+      next(error);
+    }
+  }
+}
+
+export default new ChaosController();
+
+
+
+================================================
+FILE: controllers/userController.js
+================================================
+/**
+ * @fileoverview User controller handling CRUD operations for users.
+ * @module controllers/userController
+ */
+
+import userService from '../services/userService.js';
+// import logger from '../config/logging.js';
+
+/**
+ * User controller class
+ * @class
+ */
+class UserController {
+  /**
+   * Create a new user
+   * @async
+   * @param {import('express').Request} req - Express request object
+   * @param {import('express').Response} res - Express response object
+   * @param {import('express').NextFunction} next - Express next middleware
+   * @returns {Promise<void>}
+   */
+  async create(req, res, next) {
+    try {
+      const user = await userService.createUser(req.body);
+      res.status(201).json({
+        success: true,
+        message: 'User created successfully',
+        data: user,
+      });
+    } catch (error) {
+      // if (error.code === '23505') {  // PostgreSQL error code
+      if (error.code === 'P2002') {  // Prisma unique constraint error
+        return res.status(409).json({
+          success: false,
+          message: 'Email already exists',
+        });
+      }
+      next(error);
+    }
+  }
+
+  /**
+   * Get all users
+   * @async
+   * @param {import('express').Request} req - Express request object
+   * @param {import('express').Response} res - Express response object
+   * @param {import('express').NextFunction} next - Express next middleware
+   * @returns {Promise<void>}
+   */
+  async getAll(req, res, next) {
+    try {
+      const users = await userService.getAllUsers();
+      res.status(200).json({
+        success: true,
+        data: users,
+      });
+    } catch (error) {
+      next(error);
+    }
+  }
+
+  /**
+   * Get user by ID
+   * @async
+   * @param {import('express').Request} req - Express request object
+   * @param {import('express').Response} res - Express response object
+   * @param {import('express').NextFunction} next - Express next middleware
+   * @returns {Promise<void>}
+   */
+  async getById(req, res, next) {
+    try {
+      const userId = parseInt(req.params.id);
+      const user = await userService.getUserById(userId);
+
+      if (!user) {
+        return res.status(404).json({
+          success: false,
+          message: 'User not found',
+        });
+      }
+
+      res.status(200).json({
+        success: true,
+        data: user,
+      });
+    } catch (error) {
+      next(error);
+    }
+  }
+
+  /**
+   * Update user by ID
+   * @async
+   * @param {import('express').Request} req - Express request object
+   * @param {import('express').Response} res - Express response object
+   * @param {import('express').NextFunction} next - Express next middleware
+   * @returns {Promise<void>}
+   */
+  async update(req, res, next) {
+    try {
+      const userId = parseInt(req.params.id);
+      const user = await userService.updateUser(userId, req.body);
+
+      if (!user) {
+        return res.status(404).json({
+          success: false,
+          message: 'User not found',
+        });
+      }
+
+      res.status(200).json({
+        success: true,
+        message: 'User updated successfully',
+        data: user,
+      });
+    } catch (error) {
+      next(error);
+    }
+  }
+
+  /**
+   * Delete user by ID
+   * @async
+   * @param {import('express').Request} req - Express request object
+   * @param {import('express').Response} res - Express response object
+   * @param {import('express').NextFunction} next - Express next middleware
+   * @returns {Promise<void>}
+   */
+  async delete(req, res, next) {
+    try {
+      const userId = parseInt(req.params.id);
+      const deleted = await userService.deleteUser(userId);
+
+      if (!deleted) {
+        return res.status(404).json({
+          success: false,
+          message: 'User not found',
+        });
+      }
+
+      res.status(200).json({
+        success: true,
+        message: 'User deleted successfully',
+      });
+    } catch (error) {
+      next(error);
+    }
+  }
+}
+
+export default new UserController();
+
+
+
+================================================
+FILE: middleware/errorHandler.js
+================================================
+/**
+ * @fileoverview Global error handling middleware for Express application.
+ * Catches all errors thrown in the application and returns formatted responses.
+ * Integrates with OpenTelemetry for error tracking and Winston for logging.
+ * @module middleware/errorHandler
+ */
+
+import logger from '../config/logging.js';
+import { trace, context } from '@opentelemetry/api';
+import { recordError } from '../config/metrics.js';
+
+/**
+ * Global error handler middleware.
+ * Catches all errors from routes and middleware, logs them, records in traces,
+ * and sends appropriate HTTP responses to clients.
+ * 
+ * @param {Error} err - The error object thrown by the application
+ * @param {import('express').Request} req - Express request object
+ * @param {import('express').Response} res - Express response object
+ * @param {import('express').NextFunction} next - Express next middleware function
+ * @returns {void}
+ * 
+ * @example
+ * // In app.js:
+ * app.use(errorHandler);
+ */
+const errorHandler = (err, req, res, next) => {
+  // next is not used but is required for express to identify error handling middleware
+  // Get current span for error tracking
+  const span = trace.getSpan(context.active());
+  
+  if (span) {
+    span.recordException(err);
+    span.setStatus({ code: 2, message: err.message }); // code 2 = ERROR
+  }
+
+  // Log error with trace context
+  logger.error('Application error', {
+    error: err.message,
+    stack: err.stack,
+    path: req.path,
+    method: req.method,
+    code: err.code,
+  });
+
+  // Determine status code
+  const statusCode = err.statusCode || err.status || 500;
+
+  recordError(err.name || 'UnknownError', req.path);
+
+  // Prepare error response
+  const errorResponse = {
+    success: false,
+    message: err.message || 'Internal Server Error',
+    ...(process.env.NODE_ENV === 'development' && { stack: err.stack }),
+  };
+
+  // Add specific error details for known error types
+  if (err.code) {
+    errorResponse.code = err.code;
+  }
+
+  // Send error response
+  res.status(statusCode).json(errorResponse);
+};
+
+export default errorHandler;
+
+
+================================================
+FILE: middleware/traceContext.js
+================================================
+/**
+ * @fileoverview Middleware to inject OpenTelemetry trace context into Express requests.
+ * Adds trace ID and span ID to request object and response headers.
+ * @module middleware/traceContext
+ */
+
+import { trace, context } from '@opentelemetry/api';
+
+/**
+ * Trace context middleware
+ * Extracts trace ID and span ID from active span and injects into request/response
+ * 
+ * @param {import('express').Request} req - Express request object
+ * @param {import('express').Response} res - Express response object
+ * @param {import('express').NextFunction} next - Express next middleware function
+ * @returns {void}
+ * 
+ * @example
+ * // In app.js:
+ * app.use(traceContextMiddleware);
+ * 
+ * // In route handler:
+ * console.log(req.traceId); // Access trace ID
+ */
+const traceContextMiddleware = (req, res, next) => {
+  const span = trace.getSpan(context.active());
+  
+  if (span) {
+    const spanContext = span.spanContext();
+    req.traceId = spanContext.traceId;
+    req.spanId = spanContext.spanId;
+    
+    // Add trace ID to response headers for client tracking
+    res.setHeader('X-Trace-Id', spanContext.traceId);
+  }
+  
+  next();
+};
+
+export default traceContextMiddleware;
+
+
+
+================================================
+FILE: middleware/validation.js
+================================================
+/**
+ * @fileoverview Validation middleware using Joi schemas.
+ * Validates request body, params, and query against provided Joi schema.
+ * @module middleware/validation
+ */
+
+import logger from '../config/logging.js';
+
+/**
+ * Create validation middleware from Joi schema
+ * @param {import('joi').Schema} schema - Joi validation schema
+ * @returns {Function} Express middleware function
+ * 
+ * @example
+ * import Joi from 'joi';
+ * import validate from './middleware/validation.js';
+ * 
+ * const userSchema = Joi.object({
+ *   email: Joi.string().email().required(),
+ *   password: Joi.string().min(6).required()
+ * });
+ * 
+ * router.post('/users', validate(userSchema), userController.create);
+ */
+const validate = (schema) => {
+  /**
+   * Validation middleware function
+   * @param {import('express').Request} req - Express request object
+   * @param {import('express').Response} res - Express response object
+   * @param {import('express').NextFunction} next - Express next middleware function
+   * @returns {void}
+   */
+  return (req, res, next) => {
+    const dataToValidate = { ...req.body, ...req.params, ...req.query };
+
+    const { error, value } = schema.validate(dataToValidate, {
+      abortEarly: false,
+      stripUnknown: true,
+    });
+
+    if (error) {
+      const errors = error.details.map((detail) => ({
+        message: detail.message,
+        path: detail.path,
+      }));
+
+      logger.warn('Validation failed', { errors });
+      
+      return res.status(400).json({
+        success: false,
+        message: 'Validation failed',
+        errors,
+      });
+    }
+
+    // Replace req properties with validated values
+    Object.assign(req.body, value);
+    Object.assign(req.params, value);
+    Object.assign(req.query, value);
+
+    next();
+  };
+};
+
+export default validate;
+
+
+
+================================================
+FILE: models/userModel.js
+================================================
+/**
+ * @fileoverview User model using Prisma ORM for database operations.
+ * @module models/userModel
+ */
+
+import prisma from '../config/database.js';
+import logger from '../config/logging.js';
+
+/**
+ * User model class providing database operations
+ * @class
+ */
+class UserModel {
+  /**
+   * Find user by ID
+   * @async
+   * @param {number} id - User ID
+   * @returns {Promise<Object|null>} User object or null
+   * 
+   * @example
+   * const user = await UserModel.findById(1);
+   */
+  async findById(id) {
+    try {
+      return await prisma.user.findUnique({
+        where: { id },
+        select: {
+          id: true,
+          email: true,
+          name: true,
+          createdAt: true,
+          updatedAt: true,
+        },
+      });
+    } catch (error) {
+      logger.error('Error finding user by ID', { error: error.message, id });
+      throw error;
+    }
+  }
+
+  /**
+   * Find user by email
+   * @async
+   * @param {string} email - User email
+   * @returns {Promise<Object|null>} User object with password or null
+   * 
+   * @example
+   * const user = await UserModel.findByEmail('john@example.com');
+   */
+  async findByEmail(email) {
+    try {
+      return await prisma.user.findUnique({
+        where: { email },
+      });
+    } catch (error) {
+      logger.error('Error finding user by email', { error: error.message, email });
+      throw error;
+    }
+  }
+
+  /**
+   * Find all users
+   * @async
+   * @returns {Promise<Array<Object>>} Array of user objects
+   * 
+   * @example
+   * const users = await UserModel.findAll();
+   */
+  async findAll() {
+    try {
+      return await prisma.user.findMany({
+        select: {
+          id: true,
+          email: true,
+          name: true,
+          createdAt: true,
+          updatedAt: true,
+        },
+      });
+    } catch (error) {
+      logger.error('Error finding all users', { error: error.message });
+      throw error;
+    }
+  }
+
+  /**
+   * Create new user
+   * @async
+   * @param {Object} userData - User data
+   * @param {string} userData.email - User email
+   * @param {string} userData.password - Hashed password
+   * @param {string} userData.name - User name
+   * @returns {Promise<Object>} Created user object without password
+   * 
+   * @example
+   * const user = await UserModel.create({
+   *   email: 'john@example.com',
+   *   password: 'hashedPassword',
+   *   name: 'John Doe'
+   * });
+   */
+  async create(userData) {
+    try {
+      const user = await prisma.user.create({
+        data: userData,
+        select: {
+          id: true,
+          email: true,
+          name: true,
+          createdAt: true,
+          updatedAt: true,
+        },
+      });
+      return user;
+    } catch (error) {
+      logger.error('Error creating user', { error: error.message });
+      throw error;
+    }
+  }
+
+  /**
+   * Update user by ID
+   * @async
+   * @param {number} id - User ID
+   * @param {Object} updates - Fields to update
+   * @returns {Promise<Object>} Updated user object
+   * 
+   * @example
+   * const user = await UserModel.update(1, { name: 'Jane Doe' });
+   */
+  async update(id, updates) {
+    try {
+      return await prisma.user.update({
+        where: { id },
+        data: updates,
+        select: {
+          id: true,
+          email: true,
+          name: true,
+          createdAt: true,
+          updatedAt: true,
+        },
+      });
+    } catch (error) {
+      logger.error('Error updating user', { error: error.message, id });
+      throw error;
+    }
+  }
+
+  /**
+   * Delete user by ID
+   * @async
+   * @param {number} id - User ID
+   * @returns {Promise<Object>} Deleted user object
+   * 
+   * @example
+   * await UserModel.delete(1);
+   */
+  async delete(id) {
+    try {
+      return await prisma.user.delete({
+        where: { id },
+      });
+    } catch (error) {
+      logger.error('Error deleting user', { error: error.message, id });
+      throw error;
+    }
+  }
+}
+
+export default new UserModel();
+
+
+
+================================================
+FILE: prisma/schema.prisma
+================================================
+// Prisma ORM schema definition
+generator client {
+  provider = "prisma-client-js"
+  // ES6+ Feature: This generates TypeScript types for database models
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+model User {
+  id        Int      @id @default(autoincrement())
+  email     String   @unique
+  password  String
+  name      String
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @updatedAt @map("updated_at")
+
+  @@map("users")
+  @@index([email])
+}
+
+// Add more models as needed
+model Post {
+  id        Int      @id @default(autoincrement())
+  title     String
+  content   String?
+  published Boolean  @default(false)
+  authorId  Int      @map("author_id")
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @updatedAt @map("updated_at")
+
+  @@map("posts")
+  @@index([authorId])
+}
+
+
+
+================================================
+FILE: prisma/seed.js
+================================================
+/**
+ * @fileoverview Database seeding script for initial data population.
+ * @module prisma/seed
+ */
+
+import { PrismaClient } from '@prisma/client';
+import bcrypt from 'bcrypt';
+
+const prisma = new PrismaClient();
+
+/**
+ * Main seed function
+ * @async
+ * @returns {Promise<void>}
+ */
+async function main() {
+  console.log('🌱 Starting database seed...');
+
+  /**
+   * Hashed password for demo users
+   * @type {string}
+   */
+  const hashedPassword = await bcrypt.hash('password123', 10);
+
+  /**
+   * Create demo users
+   */
+  const user1 = await prisma.user.upsert({
+    where: { email: 'john@example.com' },
+    update: {},
+    create: {
+      email: 'john@example.com',
+      name: 'John Doe',
+      password: hashedPassword,
+    },
+  });
+
+  const user2 = await prisma.user.upsert({
+    where: { email: 'jane@example.com' },
+    update: {},
+    create: {
+      email: 'jane@example.com',
+      name: 'Jane Smith',
+      password: hashedPassword,
+    },
+  });
+
+  console.log('✅ Created users:', { user1, user2 });
+  console.log('🌱 Database seeding completed!');
+}
+
+/**
+ * Execute main function and handle errors
+ */
+main()
+  .catch((e) => {
+    console.error('❌ Error during seeding:', e);
+    process.exit(1);
+  })
+  .finally(async () => {
+    await prisma.$disconnect();
+  });
+
+
+
+================================================
+FILE: routes/authRoutes.js
+================================================
+/**
+ * @fileoverview Authentication routes for login and registration.
+ * @module routes/authRoutes
+ */
+
+import express from 'express';
+import authController from '../controllers/authController.js';
+import validate from '../middleware/validation.js';
+import { loginSchema } from '../validators/userValidator.js';
+
+/**
+ * Express router for authentication endpoints
+ * @type {express.Router}
+ * @constant
+ */
+const router = express.Router();
+
+/**
+ * User login route
+ * @name POST /api/auth/login
+ * @function
+ * @memberof module:routes/authRoutes
+ * @param {Object} req.body - Request body
+ * @param {string} req.body.email - User email
+ * @param {string} req.body.password - User password
+ * @returns {Object} 200 - Login successful with JWT token
+ * @returns {Object} 401 - Invalid credentials
+ */
+router.post('/login', validate(loginSchema), authController.login);
+
+export default router;
+
+
+
+================================================
+FILE: routes/chaosRoutes.js
+================================================
+/**
+ * @fileoverview Chaos engineering routes for testing system resilience.
+ * @module routes/chaosRoute
+ */
+
+import express from 'express';
+import chaosController from '../controllers/chaosController.js';
+
+/**
+ * Express router for chaos engineering endpoints
+ * @type {express.Router}
+ * @constant
+ */
+const router = express.Router();
+
+/**
+ * Configure latency injection
+ * @name POST /api/chaos/latency
+ * @function
+ * @memberof module:routes/chaosRoute
+ */
+router.post('/latency', chaosController.configureLatency);
+
+/**
+ * Configure random failure injection
+ * @name POST /api/chaos/random-failure
+ * @function
+ * @memberof module:routes/chaosRoute
+ */
+router.post('/random-failure', chaosController.configureRandomFailure);
+
+/**
+ * Trigger memory leak simulation
+ * @name POST /api/chaos/memory-leak
+ * @function
+ * @memberof module:routes/chaosRoute
+ */
+router.post('/memory-leak', chaosController.triggerMemoryLeak);
+
+/**
+ * Trigger CPU spike simulation
+ * @name POST /api/chaos/cpu-spike
+ * @function
+ * @memberof module:routes/chaosRoute
+ */
+router.post('/cpu-spike', chaosController.triggerCPUSpike);
+
+/**
+ * Trigger database error
+ * @name POST /api/chaos/database-error
+ * @function
+ * @memberof module:routes/chaosRoute
+ */
+router.post('/database-error', chaosController.triggerDatabaseError);
+
+/**
+ * Disable all chaos features
+ * @name POST /api/chaos/disable-all
+ * @function
+ * @memberof module:routes/chaosRoute
+ */
+router.post('/disable-all', chaosController.disableAll);
+
+/**
+ * Get chaos status
+ * @name GET /api/chaos/status
+ * @function
+ * @memberof module:routes/chaosRoute
+ */
+router.get('/status', chaosController.getStatus);
+
+/**
+ * Circuit breaker test
+ * @name POST /api/chaos/circuit-breaker-test
+ * @function
+ * @memberof module:routes/chaosRoute
+ */
+router.post('/circuit-breaker-test', chaosController.circuitBreakerTest);
+
+export default router;
+
+
+
+================================================
+FILE: routes/userRoutes.js
+================================================
+/**
+ * @fileoverview User CRUD routes.
+ * @module routes/userRoutes
+ */
+
+import express from 'express';
+import userController from '../controllers/userController.js';
+import validate from '../middleware/validation.js';
+import { createUserSchema, updateUserSchema } from '../validators/userValidator.js';
+
+/**
+ * Express router for user endpoints
+ * @type {express.Router}
+ * @constant
+ */
+const router = express.Router();
+
+/**
+ * Get all users
+ * @name GET /api/users
+ * @function
+ * @memberof module:routes/userRoutes
+ * @returns {Object} 200 - Array of users
+ */
+router.get('/', userController.getAll);
+
+/**
+ * Get user by ID
+ * @name GET /api/users/:id
+ * @function
+ * @memberof module:routes/userRoutes
+ * @param {string} req.params.id - User ID
+ * @returns {Object} 200 - User object
+ * @returns {Object} 404 - User not found
+ */
+router.get('/:id', userController.getById);
+
+/**
+ * Create new user
+ * @name POST /api/users
+ * @function
+ * @memberof module:routes/userRoutes
+ * @param {Object} req.body - User data
+ * @returns {Object} 201 - Created user
+ * @returns {Object} 409 - Email already exists
+ */
+router.post('/', validate(createUserSchema), userController.create);
+
+/**
+ * Update user by ID
+ * @name PUT /api/users/:id
+ * @function
+ * @memberof module:routes/userRoutes
+ * @param {string} req.params.id - User ID
+ * @param {Object} req.body - Updated user data
+ * @returns {Object} 200 - Updated user
+ * @returns {Object} 404 - User not found
+ */
+router.put('/:id', validate(updateUserSchema), userController.update);
+
+/**
+ * Delete user by ID
+ * @name DELETE /api/users/:id
+ * @function
+ * @memberof module:routes/userRoutes
+ * @param {string} req.params.id - User ID
+ * @returns {Object} 200 - Deletion successful
+ * @returns {Object} 404 - User not found
+ */
+router.delete('/:id', userController.delete);
+
+export default router;
+
+
+
+================================================
+FILE: services/authService.js
+================================================
+/**
+ * @fileoverview Authentication service for password hashing and JWT operations.
+ * Handles user authentication, password encryption, and token generation/verification.
+ * @module services/authService
+ */
+
+import bcrypt from 'bcrypt';
+import jwt from 'jsonwebtoken';
+import dotenv from 'dotenv';
+import logger from '../config/logging.js';
+import { trace } from '@opentelemetry/api';
+
+dotenv.config();
+
+/**
+ * Authentication service class
+ * @class
+ */
+class AuthService {
+  /**
+   * Hash a plain text password using bcrypt
+   * @async
+   * @param {string} password - Plain text password to hash
+   * @returns {Promise<string>} Hashed password
+   * @throws {Error} If hashing fails
+   * 
+   * @example
+   * const hashedPassword = await authService.hashPassword('myPassword123');
+   */
+  async hashPassword(password) {
+    const tracer = trace.getTracer('auth-service');
+    return tracer.startActiveSpan('auth.hashPassword', async (span) => {
+      try {
+        const saltRounds = 10;
+        const hashed = await bcrypt.hash(password, saltRounds);
+        logger.info('Password hashed successfully');
+        return hashed;
+      } catch (error) {
+        span.recordException(error);
+        logger.error('Password hashing failed', { error: error.message });
+        throw error;
+      } finally {
+        span.end();
+      }
+    });
+  }
+
+  /**
+   * Compare a plain text password with a hashed password
+   * @async
+   * @param {string} password - Plain text password
+   * @param {string} hashedPassword - Hashed password to compare against
+   * @returns {Promise<boolean>} True if passwords match, false otherwise
+   * @throws {Error} If comparison fails
+   * 
+   * @example
+   * const isValid = await authService.comparePassword('myPassword123', hashedPassword);
+   */
+  async comparePassword(password, hashedPassword) {
+    const tracer = trace.getTracer('auth-service');
+    return tracer.startActiveSpan('auth.comparePassword', async (span) => {
+      try {
+        const isMatch = await bcrypt.compare(password, hashedPassword);
+        logger.info('Password comparison completed', { matched: isMatch });
+        return isMatch;
+      } catch (error) {
+        span.recordException(error);
+        logger.error('Password comparison failed', { error: error.message });
+        throw error;
+      } finally {
+        span.end();
+      }
+    });
+  }
+
+  /**
+   * Generate a JWT token for authenticated user
+   * @param {Object} payload - Token payload
+   * @param {number} payload.userId - User ID
+   * @param {string} payload.email - User email
+   * @returns {string} Signed JWT token
+   * @throws {Error} If token generation fails
+   * 
+   * @example
+   * const token = authService.generateToken({ userId: 1, email: 'user@example.com' });
+   */
+  generateToken({ userId, email }) {
+    const tracer = trace.getTracer('auth-service');
+    const span = tracer.startSpan('auth.generateToken');
+    try {
+      const token = jwt.sign(
+        { userId, email },
+        process.env.JWT_SECRET || 'default-secret',
+        { expiresIn: process.env.JWT_EXPIRES_IN || '1h' }
+      );
+      logger.info('JWT token generated', { userId });
+      return token;
+    } catch (error) {
+      span.recordException(error);
+      logger.error('Token generation failed', { error: error.message });
+      throw error;
+    } finally {
+      span.end();
+    }
+  }
+
+  /**
+   * Verify and decode a JWT token
+   * @param {string} token - JWT token to verify
+   * @returns {Object} Decoded token payload
+   * @returns {number} returns.userId - User ID from token
+   * @returns {string} returns.email - User email from token
+   * @throws {Error} If token verification fails
+   * 
+   * @example
+   * const decoded = authService.verifyToken(token);
+   * console.log(decoded.userId, decoded.email);
+   */
+  verifyToken(token) {
+    const tracer = trace.getTracer('auth-service');
+    const span = tracer.startSpan('auth.verifyToken');
+    try {
+      const decoded = jwt.verify(token, process.env.JWT_SECRET || 'default-secret');
+      logger.info('Token verified successfully');
+      return decoded;
+    } catch (error) {
+      span.recordException(error);
+      logger.error('Token verification failed', { error: error.message });
+      throw error;
+    } finally {
+      span.end();
+    }
+  }
+}
+
+export default new AuthService();
+
+
+
+================================================
+FILE: services/chaosService.js
+================================================
+/**
+ * @fileoverview Chaos engineering service for testing system resilience.
+ * Provides methods to inject latency, trigger failures, and simulate various error conditions.
+ * @module services/chaosService
+ */
+
+import logger from '../config/logging.js';
+import { trace } from '@opentelemetry/api';
+
+/**
+ * Chaos engineering service class
+ * @class
+ */
+class ChaosService {
+  /**
+   * Initialize chaos service with configuration map
+   * @constructor
+   */
+  constructor() {
+    this.config = new Map();
+    this.config.set('database', { latency: 0, failureRate: 0, enabled: false });
+    this.config.set('api', { latency: 0, failureRate: 0, enabled: false });
+    this.memoryLeakInterval = null;
+  }
+
+  /**
+   * Inject latency delay into a service
+   * @async
+   * @param {string} service - Service name ('database' or 'api')
+   * @param {number} [duration] - Duration in milliseconds (uses config if not provided)
+   * @returns {Promise<void>}
+   * 
+   * @example
+   * await chaosService.injectLatency('database', 2000);
+   */
+  async injectLatency(service, duration) {
+    const config = this.config.get(service);
+    if (!config || !config.enabled || config.latency === 0) {
+      return;
+    }
+
+    const tracer = trace.getTracer('chaos-service');
+    const span = tracer.startSpan('chaos.latency');
+    try {
+      span.setAttribute('chaos.service', service);
+      span.setAttribute('chaos.latency_ms', duration || config.latency);
+      logger.warn(`Chaos: Injecting ${duration || config.latency}ms latency into ${service}`);
+      await new Promise(resolve => setTimeout(resolve, duration || config.latency));
+    } finally {
+      span.end();
+    }
+  }
+
+  /**
+   * Randomly trigger failure based on configured probability
+   * @async
+   * @param {string} service - Service name
+   * @returns {Promise<boolean>} True if failure was triggered, false otherwise
+   * 
+   * @example
+   * const failed = await chaosService.injectRandomFailure('database');
+   */
+  async injectRandomFailure(service) {
+    const config = this.config.get(service);
+    if (!config || !config.enabled || config.failureRate === 0) {
+      return false;
+    }
+
+    const tracer = trace.getTracer('chaos-service');
+    const span = tracer.startSpan('chaos.random_failure');
+    try {
+      const shouldFail = Math.random() < config.failureRate;
+      span.setAttribute('chaos.service', service);
+      span.setAttribute('chaos.failure_rate', config.failureRate);
+      span.setAttribute('chaos.failed', shouldFail);
+
+      if (shouldFail) {
+        logger.warn(`Chaos: Triggering random failure in ${service}`);
+        const error = new Error(`Chaos-induced failure in ${service}`);
+        span.recordException(error);
+        return true;
+      }
+
+      return false;
+    } finally {
+      span.end();
+    }
+  }
+
+  /**
+   * Configure latency injection for a service
+   * @param {string} service - Service name
+   * @param {number} duration - Latency duration in milliseconds
+   * @param {boolean} [enabled=true] - Enable or disable latency injection
+   * @returns {void}
+   * 
+   * @example
+   * chaosService.configureLatency('database', 1000, true);
+   */
+  configureLatency(service, duration, enabled = true) {
+    const config = this.config.get(service) || {};
+    config.latency = duration;
+    config.enabled = enabled;
+    this.config.set(service, config);
+    logger.info(`Chaos: Configured latency for ${service}`, { duration, enabled });
+  }
+
+  /**
+   * Configure random failure rate for a service
+   * @param {string} service - Service name
+   * @param {number} rate - Failure probability (0.0 to 1.0)
+   * @param {boolean} [enabled=true] - Enable or disable failure injection
+   * @returns {void}
+   * 
+   * @example
+   * chaosService.configureFailureRate('database', 0.3, true);
+   */
+  configureFailureRate(service, rate, enabled = true) {
+    const config = this.config.get(service) || {};
+    config.failureRate = rate;
+    config.enabled = enabled;
+    this.config.set(service, config);
+    logger.info(`Chaos: Configured failure rate for ${service}`, { rate, enabled });
+  }
+
+  /**
+   * Simulate memory leak by continuously allocating memory
+   * @param {number} [durationMs=30000] - Duration of memory leak in milliseconds
+   * @returns {void}
+   * 
+   * @example
+   * chaosService.simulateMemoryLeak(60000); // 60 seconds
+   */
+  simulateMemoryLeak(durationMs = 30000) {
+    logger.warn('Chaos: Starting memory leak simulation', { duration: durationMs });
+    const memoryLeakArray = [];
+    let iterations = 0;
+
+    this.memoryLeakInterval = setInterval(() => {
+      // Allocate ~10MB per iteration
+      memoryLeakArray.push(new Array(1000000).fill('*'.repeat(10)));
+      iterations++;
+      logger.warn('Chaos: Memory leak iteration', {
+        iteration: iterations,
+        arraySize: memoryLeakArray.length
+      });
+    }, 1000);
+
+    setTimeout(() => {
+      clearInterval(this.memoryLeakInterval);
+      logger.info('Chaos: Memory leak simulation ended');
+    }, durationMs);
+  }
+
+  /**
+   * Simulate CPU spike by running intensive calculations
+   * @param {number} [durationMs=5000] - Duration of CPU spike in milliseconds
+   * @returns {void}
+   * 
+   * @example
+   * chaosService.simulateCPUSpike(10000); // 10 seconds
+   */
+  simulateCPUSpike(durationMs = 5000) {
+    logger.warn('Chaos: Starting CPU spike simulation', { duration: durationMs });
+    const tracer = trace.getTracer('chaos-service');
+    const span = tracer.startSpan('chaos.cpu_spike');
+    try {
+      span.setAttribute('chaos.duration_ms', durationMs);
+      const start = Date.now();
+      
+      while (Date.now() - start < durationMs) {
+        // Busy wait to consume CPU
+        Math.sqrt(Math.random() * 1000000);
+      }
+
+      logger.info('Chaos: CPU spike simulation completed');
+    } finally {
+      span.end();
+    }
+  }
+
+  /**
+   * Simulate database error with specific error type
+   * @async
+   * @param {string} [errorType='CONNECTION_ERROR'] - Type of database error
+   * @throws {Error} Database error based on error type
+   * 
+   * @example
+   * try {
+   *   await chaosService.simulateDatabaseError('TIMEOUT');
+   * } catch (error) {
+   *   console.error('Database error:', error.message);
+   * }
+   */
+  async simulateDatabaseError(errorType = 'CONNECTION_ERROR') {
+    const tracer = trace.getTracer('chaos-service');
+    const span = tracer.startSpan('chaos.database_error');
+    try {
+      span.setAttribute('chaos.error_type', errorType);
+      logger.error('Chaos: Simulating database error', { errorType });
+
+      const errors = {
+        CONNECTION_ERROR: new Error('ECONNREFUSED: Connection refused'),
+        TIMEOUT: new Error('ETIMEDOUT: Query timeout'),
+        DEADLOCK: new Error('Deadlock detected'),
+        CONSTRAINT_VIOLATION: new Error('Unique constraint violation'),
+      };
+
+      const error = errors[errorType] || new Error('Unknown database error');
+      span.recordException(error);
+      throw error;
+    } finally {
+      span.end();
+    }
+  }
+
+  /**
+   * Disable all chaos engineering features
+   * @returns {void}
+   * 
+   * @example
+   * chaosService.disableAllChaos();
+   */
+  disableAllChaos() {
+    for (const [service, config] of this.config.entries()) {
+      config.enabled = false;
+      config.latency = 0;
+      config.failureRate = 0;
+    }
+
+    if (this.memoryLeakInterval) {
+      clearInterval(this.memoryLeakInterval);
+    }
+
+    logger.info('Chaos: All chaos engineering features disabled');
+  }
+
+  /**
+   * Get current chaos configuration status
+   * @returns {Object} Current configuration for all services
+   * 
+   * @example
+   * const status = chaosService.getStatus();
+   * console.log(status);
+   */
+  getStatus() {
+    return Object.fromEntries(this.config);
+  }
+}
+
+export default new ChaosService();
+
+
+
+================================================
+FILE: services/databaseService.js
+================================================
+/**
+ * @fileoverview Legacy database service wrapper for raw SQL queries.
+ * Provides backward compatibility for raw SQL with chaos engineering support.
+ * Uses Prisma Client for query execution.
+ * @module services/databaseService
+ * @deprecated Prefer using Prisma models directly for type safety
+ */
+
+import prisma from '../config/database.js';
+import logger from '../config/logging.js';
+import { recordDatabaseQuery } from '../config/metrics.js';  // ⭐ ADD THIS
+import { trace } from '@opentelemetry/api';
+import chaosService from './chaosService.js';
+
+/**
+ * Database service class for raw SQL queries with chaos engineering
+ * @class
+ * @deprecated Use Prisma models directly instead of raw queries
+ */
+class DatabaseService {
+  /**
+   * Execute a raw SQL query with chaos engineering and observability
+   * @async
+   * @param {string} query - Raw SQL query string
+   * @param {Array} [params=[]] - Query parameters (for parameterized queries)
+   * @returns {Promise<Object>} Query result with rows and rowCount
+   * @returns {Array} returns.rows - Result rows
+   * @returns {number} returns.rowCount - Number of rows returned
+   * @throws {Error} If query execution fails or chaos is triggered
+   * 
+   * @example
+   * const result = await databaseService.query(
+   *   'SELECT * FROM users WHERE id = $1',
+   *   [userId]
+   * );
+   * console.log(result.rows);
+   */
+  async query(query, params = []) {
+    const tracer = trace.getTracer('database-service');
+    return tracer.startActiveSpan('db.query', async (span) => {
+      const start = Date.now();
+      
+      try {
+        span.setAttribute('db.system', 'postgresql');
+        span.setAttribute('db.statement', query);
+
+        // Inject chaos latency
+        await chaosService.injectLatency('database');
+        
+        // Check for chaos-induced failures
+        const shouldFail = await chaosService.injectRandomFailure('database');
+        if (shouldFail) {
+          throw new Error('Chaos-induced database failure');
+        }
+
+        // Execute raw SQL query using Prisma
+        const result = await prisma.$queryRawUnsafe(query, ...params);
+        
+        const duration = (Date.now() - start) / 1000;
+
+        // ⭐ Record database metrics with exemplars
+        recordDatabaseQuery('RAW_SQL', 'multiple', duration);
+
+        logger.info('Database query executed', {
+          duration: `${duration}s`,
+          rowCount: result.length
+        });
+
+        return { rows: result, rowCount: result.length };
+      } catch (error) {
+        span.recordException(error);
+        
+        const duration = (Date.now() - start) / 1000;
+        
+        // ⭐ Record failed query metrics
+        recordDatabaseQuery('RAW_SQL', 'multiple', duration);
+        
+        logger.error('Database query failed', {
+          error: error.message,
+          query: query.substring(0, 100)
+        });
+        
+        throw error;
+      } finally {
+        span.end();
+      }
+    });
+  }
+
+  /**
+   * Get a Prisma client transaction
+   * @async
+   * @returns {Promise<PrismaClient>} Prisma client instance
+   * @deprecated Use Prisma transactions directly via prisma.$transaction()
+   * 
+   * @example
+   * const client = await databaseService.getClient();
+   * await client.user.create({...});
+   */
+  async getClient() {
+    return prisma;
+  }
+}
+
+export default new DatabaseService();
+
+
+
+================================================
+FILE: services/userService.js
+================================================
+/**
+ * @fileoverview User service handling business logic for user operations.
+ * Manages user CRUD operations, authentication, and integrates with Prisma ORM.
+ * @module services/userService
+ */
+
+import UserModel from '../models/userModel.js';
+import authService from './authService.js';
+import logger from '../config/logging.js';
+import { trace } from '@opentelemetry/api';
+
+/**
+ * User service class
+ * @class
+ */
+class UserService {
+  /**
+   * Create a new user with hashed password
+   * @async
+   * @param {Object} userData - User data object
+   * @param {string} userData.email - User email address
+   * @param {string} userData.password - Plain text password
+   * @param {string} userData.name - User full name
+   * @returns {Promise<Object>} Created user object (without password)
+   * @throws {Error} If user creation fails
+   * 
+   * @example
+   * const user = await userService.createUser({
+   *   email: 'john@example.com',
+   *   password: 'password123',
+   *   name: 'John Doe'
+   * });
+   */
+  async createUser(userData) {
+    const tracer = trace.getTracer('user-service');
+    return tracer.startActiveSpan('user.create', async (span) => {
+      try {
+        const { email, password, name } = userData;
+        span.setAttribute('user.email', email);
+
+        const hashedPassword = await authService.hashPassword(password);
+        const user = await UserModel.create({
+          email,
+          password: hashedPassword,
+          name,
+        });
+
+        logger.info('User created successfully', { userId: user.id });
+        return user;
+      } catch (error) {
+        span.recordException(error);
+        logger.error('User creation failed', { error: error.message });
+        throw error;
+      } finally {
+        span.end();
+      }
+    });
+  }
+
+  /**
+   * Get user by ID
+   * @async
+   * @param {number} userId - User ID
+   * @returns {Promise<Object|null>} User object or null if not found
+   * @throws {Error} If retrieval fails
+   * 
+   * @example
+   * const user = await userService.getUserById(1);
+   */
+  async getUserById(userId) {
+    const tracer = trace.getTracer('user-service');
+    return tracer.startActiveSpan('user.getById', async (span) => {
+      try {
+        span.setAttribute('user.id', userId);
+        const user = await UserModel.findById(userId);
+
+        if (!user) {
+          logger.warn('User not found', { userId });
+          return null;
+        }
+
+        logger.info('User retrieved successfully', { userId });
+        return user;
+      } catch (error) {
+        span.recordException(error);
+        logger.error('User retrieval failed', { error: error.message, userId });
+        throw error;
+      } finally {
+        span.end();
+      }
+    });
+  }
+
+  /**
+   * Get all users
+   * @async
+   * @returns {Promise<Array<Object>>} Array of user objects
+   * @throws {Error} If retrieval fails
+   * 
+   * @example
+   * const users = await userService.getAllUsers();
+   */
+  async getAllUsers() {
+    const tracer = trace.getTracer('user-service');
+    return tracer.startActiveSpan('user.getAll', async (span) => {
+      try {
+        const users = await UserModel.findAll();
+        logger.info('Users retrieved successfully', { count: users.length });
+        return users;
+      } catch (error) {
+        span.recordException(error);
+        logger.error('Users retrieval failed', { error: error.message });
+        throw error;
+      } finally {
+        span.end();
+      }
+    });
+  }
+
+  /**
+   * Update user by ID
+   * @async
+   * @param {number} userId - User ID
+   * @param {Object} updates - Fields to update
+   * @param {string} [updates.name] - New name
+   * @param {string} [updates.email] - New email
+   * @returns {Promise<Object|null>} Updated user object or null if not found
+   * @throws {Error} If update fails
+   * 
+   * @example
+   * const user = await userService.updateUser(1, { name: 'Jane Doe' });
+   */
+  async updateUser(userId, updates) {
+    const tracer = trace.getTracer('user-service');
+    return tracer.startActiveSpan('user.update', async (span) => {
+      try {
+        span.setAttribute('user.id', userId);
+        const user = await UserModel.update(userId, updates);
+        logger.info('User updated successfully', { userId });
+        return user;
+      } catch (error) {
+        span.recordException(error);
+        if (error.code === 'P2025') {
+          logger.warn('User not found for update', { userId });
+          return null;
+        }
+        logger.error('User update failed', { error: error.message, userId });
+        throw error;
+      } finally {
+        span.end();
+      }
+    });
+  }
+
+  /**
+   * Delete user by ID
+   * @async
+   * @param {number} userId - User ID
+   * @returns {Promise<boolean>} True if deleted, false if not found
+   * @throws {Error} If deletion fails
+   * 
+   * @example
+   * const deleted = await userService.deleteUser(1);
+   */
+  async deleteUser(userId) {
+    const tracer = trace.getTracer('user-service');
+    return tracer.startActiveSpan('user.delete', async (span) => {
+      try {
+        span.setAttribute('user.id', userId);
+        await UserModel.delete(userId);
+        logger.info('User deleted successfully', { userId });
+        return true;
+      } catch (error) {
+        span.recordException(error);
+        if (error.code === 'P2025') {
+          logger.warn('User not found for deletion', { userId });
+          return false;
+        }
+        logger.error('User deletion failed', { error: error.message, userId });
+        throw error;
+      } finally {
+        span.end();
+      }
+    });
+  }
+
+  /**
+   * Authenticate user with email and password
+   * @async
+   * @param {string} email - User email
+   * @param {string} password - Plain text password
+   * @returns {Promise<Object|null>} Authentication result with user and token, or null
+   * @returns {Object} returns.user - User object without password
+   * @returns {string} returns.token - JWT token
+   * @throws {Error} If authentication process fails
+   * 
+   * @example
+   * const result = await userService.authenticateUser('john@example.com', 'password123');
+   * if (result) {
+   *   console.log(result.token);
+   * }
+   */
+  async authenticateUser(email, password) {
+    const tracer = trace.getTracer('user-service');
+    return tracer.startActiveSpan('user.authenticate', async (span) => {
+      try {
+        span.setAttribute('user.email', email);
+        const user = await UserModel.findByEmail(email);
+
+        if (!user) {
+          logger.warn('Authentication failed - user not found', { email });
+          return null;
+        }
+
+        const isValidPassword = await authService.comparePassword(password, user.password);
+        if (!isValidPassword) {
+          logger.warn('Authentication failed - invalid password', { email });
+          return null;
+        }
+
+        const token = authService.generateToken({ userId: user.id, email: user.email });
+        logger.info('User authenticated successfully', { userId: user.id });
+
+        // Remove password from response
+        const { password: _, ...userWithoutPassword } = user;
+        return { user: userWithoutPassword, token };
+      } catch (error) {
+        span.recordException(error);
+        logger.error('Authentication failed', { error: error.message, email });
+        throw error;
+      } finally {
+        span.end();
+      }
+    });
+  }
+}
+
+export default new UserService();
+
+
+
+================================================
+FILE: validators/userValidator.js
+================================================
+/**
+ * @fileoverview Joi validation schemas for user operations.
+ * @module validators/userValidator
+ */
+
+import Joi from 'joi';
+
+/**
+ * Schema for creating a new user
+ * @type {Joi.ObjectSchema}
+ * @constant
+ */
+const createUserSchema = Joi.object({
+  email: Joi.string().email().required().messages({
+    'string.email': 'Please provide a valid email address',
+    'any.required': 'Email is required',
+  }),
+  password: Joi.string().min(6).required().messages({
+    'string.min': 'Password must be at least 6 characters long',
+    'any.required': 'Password is required',
+  }),
+  name: Joi.string().min(2).required().messages({
+    'string.min': 'Name must be at least 2 characters long',
+    'any.required': 'Name is required',
+  }),
+});
+
+/**
+ * Schema for updating an existing user
+ * @type {Joi.ObjectSchema}
+ * @constant
+ */
+const updateUserSchema = Joi.object({
+  email: Joi.string().email().messages({
+    'string.email': 'Please provide a valid email address',
+  }),
+  name: Joi.string().min(2).messages({
+    'string.min': 'Name must be at least 2 characters long',
+  }),
+}).min(1); // At least one field must be present
+
+/**
+ * Schema for user login
+ * @type {Joi.ObjectSchema}
+ * @constant
+ */
+const loginSchema = Joi.object({
+  email: Joi.string().email().required().messages({
+    'string.email': 'Please provide a valid email address',
+    'any.required': 'Email is required',
+  }),
+  password: Joi.string().required().messages({
+    'any.required': 'Password is required',
+  }),
+});
+
+export { createUserSchema, updateUserSchema, loginSchema };
+
+
+
+================================================
+FILE: venv_app-observe/pyvenv.cfg
+================================================
+home = /usr/bin
+include-system-site-packages = false
+version = 3.10.12
+
+
+
+================================================
+SYMLINK: venv_app-observe/lib64 -> lib
+================================================
+
+

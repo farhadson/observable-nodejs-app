@@ -1,0 +1,105 @@
+/**
+ * @fileoverview Legacy database service wrapper for raw SQL queries.
+ * Provides backward compatibility for raw SQL with chaos engineering support.
+ * Uses Prisma Client for query execution.
+ * @module services/databaseService
+ * @deprecated Prefer using Prisma models directly for type safety
+ */
+
+import prisma from '../config/database.js';
+import logger from '../config/logging.js';
+import { recordDatabaseQuery } from '../config/metrics.js';  // ⭐ ADD THIS
+import { trace } from '@opentelemetry/api';
+import chaosService from './chaosService.js';
+
+/**
+ * Database service class for raw SQL queries with chaos engineering
+ * @class
+ * @deprecated Use Prisma models directly instead of raw queries
+ */
+class DatabaseService {
+  /**
+   * Execute a raw SQL query with chaos engineering and observability
+   * @async
+   * @param {string} query - Raw SQL query string
+   * @param {Array} [params=[]] - Query parameters (for parameterized queries)
+   * @returns {Promise<Object>} Query result with rows and rowCount
+   * @returns {Array} returns.rows - Result rows
+   * @returns {number} returns.rowCount - Number of rows returned
+   * @throws {Error} If query execution fails or chaos is triggered
+   * 
+   * @example
+   * const result = await databaseService.query(
+   *   'SELECT * FROM users WHERE id = $1',
+   *   [userId]
+   * );
+   * console.log(result.rows);
+   */
+  async query(query, params = []) {
+    const tracer = trace.getTracer('database-service');
+    return tracer.startActiveSpan('db.query', async (span) => {
+      const start = Date.now();
+      
+      try {
+        span.setAttribute('db.system', 'postgresql');
+        span.setAttribute('db.statement', query);
+
+        // Inject chaos latency
+        await chaosService.injectLatency('database');
+        
+        // Check for chaos-induced failures
+        const shouldFail = await chaosService.injectRandomFailure('database');
+        if (shouldFail) {
+          throw new Error('Chaos-induced database failure');
+        }
+
+        // Execute raw SQL query using Prisma
+        const result = await prisma.$queryRawUnsafe(query, ...params);
+        
+        const duration = (Date.now() - start) / 1000;
+
+        // ⭐ Record database metrics with exemplars
+        recordDatabaseQuery('RAW_SQL', 'multiple', duration);
+
+        logger.info('Database query executed', {
+          duration: `${duration}s`,
+          rowCount: result.length
+        });
+
+        return { rows: result, rowCount: result.length };
+      } catch (error) {
+        span.recordException(error);
+        
+        const duration = (Date.now() - start) / 1000;
+        
+        // ⭐ Record failed query metrics
+        recordDatabaseQuery('RAW_SQL', 'multiple', duration);
+        
+        logger.error('Database query failed', {
+          error: error.message,
+          query: query.substring(0, 100)
+        });
+        
+        throw error;
+      } finally {
+        span.end();
+      }
+    });
+  }
+
+  /**
+   * Get a Prisma client transaction
+   * @async
+   * @returns {Promise<PrismaClient>} Prisma client instance
+   * @deprecated Use Prisma transactions directly via prisma.$transaction()
+   * 
+   * @example
+   * const client = await databaseService.getClient();
+   * await client.user.create({...});
+   */
+  async getClient() {
+    return prisma;
+  }
+}
+
+export default new DatabaseService();
