@@ -1,3 +1,7 @@
 .env
 requirements.txt
 venv*
+node_modules
+logs/*
+prisma/migrations/*
+TEST.md

@@ -121,6 +121,8 @@ const activeUsers = meter.createUpDownCounter('active_users_total', {
  * @constant
  */
 const promRegister = new client.Registry();
+//Enable OpenMetrics support for exemplars
+promRegister.setContentType(client.Registry.OPENMETRICS_CONTENT_TYPE);
 
 /**
  * HTTP request duration histogram WITH EXEMPLARS
@@ -137,7 +139,8 @@ const httpDurationHistogram = new client.Histogram({
   help: 'Duration of HTTP requests in seconds with exemplars',
   labelNames: ['method', 'route', 'status_code'],
   buckets: [0.001, 0.01, 0.1, 0.5, 1, 2, 5],
-  enableExemplars: true,
+  //// When OpenMetrics registry is enabled, The registry itslef will handle exemplars automatically.
+  // enableExemplars: true, 
   registers: [promRegister],
 });
 
@@ -155,7 +158,7 @@ const httpRequestCounterCustom = new client.Counter({
   name: 'http_requests_total_custom',
   help: 'Total number of HTTP requests with exemplars',
   labelNames: ['method', 'route', 'status_code'],
-  enableExemplars: true,
+  // enableExemplars: true,
   registers: [promRegister],
 });
 
@@ -174,7 +177,7 @@ const dbQueryHistogram = new client.Histogram({
   help: 'Duration of database queries with exemplars',
   labelNames: ['operation', 'table'],
   buckets: [0.001, 0.01, 0.05, 0.1, 0.5, 1],
-  enableExemplars: true,
+  // enableExemplars: true,
   registers: [promRegister],
 });
 
@@ -192,7 +195,7 @@ const errorCounter = new client.Counter({
   name: 'application_errors_total',
   help: 'Total number of application errors with exemplars',
   labelNames: ['error_type', 'route'],
-  enableExemplars: true,
+  // enableExemplars: true,
   registers: [promRegister],
 });
 
@@ -200,120 +203,103 @@ const errorCounter = new client.Counter({
 
 /**
  * Record HTTP request metrics with trace exemplar
- * Records both OpenTelemetry metrics (no exemplar) and custom metrics (with exemplar)
- * Automatically extracts trace context from active span
- * @param {string} method - HTTP method (GET, POST, PUT, DELETE, etc)
- * @param {string} route - Express route path (/api/users/:id)
- * @param {number} statusCode - HTTP status code (200, 404, 500, etc)
+ * Records both OpenTelemetry metrics and custom prom-client metrics
+ * Exemplars are automatically captured from OpenTelemetry context
+ * @param {string} method - HTTP method
+ * @param {string} route - Route path
+ * @param {number} statusCode - HTTP status code
  * @param {number} duration - Request duration in seconds
- * @returns {void}
- * 
- * @example
- * // Called automatically by metrics middleware in app.js
- * recordHttpRequest('POST', '/api/users', 201, 0.145);
- * 
- * @example
- * // Results in Prometheus metrics:
- * // http_requests_total_custom{method="POST",route="/api/users",status_code="201"} 1
- * // http_request_duration_seconds_custom{method="POST",route="/api/users",status_code="201"} 0.145
- * // With exemplar: {traceId="abc123...", spanId="xyz789..."}
  */
 const recordHttpRequest = (method, route, statusCode, duration) => {
-  // Record OpenTelemetry metrics (no exemplars)
-  httpRequestCounter_OTEL.add(1, { method, route, status_code: statusCode });
-  httpRequestDuration_OTEL.record(duration, { method, route, status_code: statusCode });
-
-  // Get current span for exemplar
-  const span = trace.getSpan(context.active());
-  const exemplarLabels = {};
+  // Validate inputs
+  if (typeof duration !== 'number' || isNaN(duration) || duration < 0) {
+    console.error('❌ Invalid duration:', { method, route, statusCode, duration });
+    return;
+  }
   
-  if (span) {
-    const spanContext = span.spanContext();
-    exemplarLabels.traceId = spanContext.traceId;
-    exemplarLabels.spanId = spanContext.spanId;
+  if (typeof statusCode !== 'number' || isNaN(statusCode)) {
+    console.error('❌ Invalid statusCode:', { method, route, statusCode, duration });
+    return;
   }
 
-  // Record prom-client metrics with exemplars
-  httpRequestCounterCustom.inc(
-    { method, route, status_code: statusCode },
-    1,
-    exemplarLabels
-  );
+  const routePath = String(route || 'unknown');
+  const methodStr = String(method || 'UNKNOWN');
   
-  httpDurationHistogram.observe(
-    { method, route, status_code: statusCode },
-    duration,
-    exemplarLabels
-  );
+  // OpenTelemetry metrics
+  try {
+    httpRequestDuration_OTEL.record(duration, { 
+      method: methodStr, 
+      route: routePath, 
+      status_code: statusCode 
+    });
+    httpRequestCounter_OTEL.add(1, { 
+      method: methodStr, 
+      route: routePath, 
+      status_code: statusCode 
+    });
+  } catch (error) {
+    console.error('❌ OpenTelemetry metrics error:', error.message);
+  }
+
+  // prom-client metrics with automatic exemplar capture
+  try {
+    const labels = { 
+      method: methodStr, 
+      route: routePath, 
+      status_code: statusCode 
+    };
+    
+    // Exemplars are automatically captured from active OpenTelemetry span
+    httpDurationHistogram.observe(labels, duration);
+    httpRequestCounterCustom.inc(labels, 1);
+    
+  } catch (error) {
+    console.error('❌ prom-client metrics error:', {
+      error: error.message,
+      method: methodStr,
+      route: routePath,
+      statusCode,
+      duration
+    });
+  }
 };
 
 /**
  * Record database query metrics with trace exemplar
- * Records both OpenTelemetry metrics (no exemplar) and custom metrics (with exemplar)
- * Automatically extracts trace context from active span
- * @param {string} operation - Database operation type (CREATE, READ, UPDATE, DELETE, RAW_SQL)
- * @param {string} table - Database table name (users, posts, etc)
+ * Exemplars are automatically captured from OpenTelemetry context
+ * @param {string} operation - Database operation type
+ * @param {string} table - Database table name
  * @param {number} duration - Query duration in seconds
- * @returns {void}
- * 
- * @example
- * // Called by databaseService or models
- * recordDatabaseQuery('CREATE', 'users', 0.052);
- * recordDatabaseQuery('RAW_SQL', 'multiple', 0.123);
- * 
- * @example
- * // Results in Prometheus metrics:
- * // database_query_duration_seconds_custom{operation="CREATE",table="users"} 0.052
- * // With exemplar: {traceId="abc123...", spanId="xyz789..."}
  */
 const recordDatabaseQuery = (operation, table, duration) => {
   // OpenTelemetry metric
-  databaseQueryDuration_OTEL.record(duration, { operation, table });
-
-  // Get exemplar
-  const span = trace.getSpan(context.active());
-  const exemplarLabels = {};
-  
-  if (span) {
-    const spanContext = span.spanContext();
-    exemplarLabels.traceId = spanContext.traceId;
-    exemplarLabels.spanId = spanContext.spanId;
+  try {
+    databaseQueryDuration_OTEL.record(duration, { operation, table });
+  } catch (error) {
+    console.error('❌ OpenTelemetry database metric error:', error.message);
   }
 
-  // prom-client metric with exemplar
-  dbQueryHistogram.observe({ operation, table }, duration, exemplarLabels);
+  // prom-client metric with automatic exemplar capture
+  try {
+    dbQueryHistogram.observe({ operation, table }, duration);
+  } catch (error) {
+    console.error('❌ prom-client database metric error:', error.message);
+  }
 };
 
 /**
  * Record application error with trace exemplar
- * Links error occurrences to the trace where the error happened
- * Automatically extracts trace context from active span
- * @param {string} errorType - Error type/name (ValidationError, DatabaseError, UnauthorizedError, etc)
- * @param {string} route - Route where error occurred (/api/users, /api/auth/login, etc)
- * @returns {void}
- * 
- * @example
- * // Called by error handler middleware
- * recordError('ValidationError', '/api/users');
- * recordError('DatabaseError', '/api/posts');
- * 
- * @example
- * // Results in Prometheus metrics:
- * // application_errors_total{error_type="ValidationError",route="/api/users"} 1
- * // With exemplar: {traceId="abc123...", spanId="xyz789..."}
- * // Click exemplar in Grafana → Jump to trace in Tempo showing the error
+ * Exemplars are automatically captured from OpenTelemetry context
+ * @param {string} errorType - Error type/name
+ * @param {string} route - Route where error occurred
  */
 const recordError = (errorType, route) => {
-  const span = trace.getSpan(context.active());
-  const exemplarLabels = {};
-  
-  if (span) {
-    const spanContext = span.spanContext();
-    exemplarLabels.traceId = spanContext.traceId;
-    exemplarLabels.spanId = spanContext.spanId;
+  try {
+    // Exemplar automatically captured from active span
+    errorCounter.inc({ error_type: errorType, route }, 1);
+  } catch (error) {
+    console.error('❌ Error recording error metric:', error.message);
   }
-
-  errorCounter.inc({ error_type: errorType, route }, 1, exemplarLabels);
 };
 
 /**

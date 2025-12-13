@@ -42,13 +42,42 @@ app.use(traceContextMiddleware);
  * @param {import('express').Response} res - Express response
  * @param {import('express').NextFunction} next - Next middleware
  */
+/**
+ * Metrics middleware - records HTTP request metrics
+ * ✅ FIXED: Better route detection and timing
+ */
 app.use((req, res, next) => {
   const start = Date.now();
   
-  res.on('finish', () => {
-    const duration = (Date.now() - start) / 1000;
-    recordHttpRequest(req.method, req.route?.path || req.path, res.statusCode, duration);
-  });
+  // Capture metrics when response finishes
+  const originalEnd = res.end;
+  res.end = function(...args) {
+    try {
+      const duration = (Date.now() - start) / 1000;
+      
+      // Get route path (most reliable at response time)
+      let route = 'unknown';
+      if (req.route && req.route.path) {
+        route = (req.baseUrl || '') + req.route.path;
+      } else {
+        route = req.path || req.url || 'unknown';
+      }
+      
+      // Clean up route (remove query string)
+      route = route.split('?')[0];
+      
+      // Record metrics
+      if (typeof duration === 'number' && !isNaN(duration) && duration >= 0 &&
+          typeof res.statusCode === 'number' && !isNaN(res.statusCode)) {
+        recordHttpRequest(req.method, route, res.statusCode, duration);
+      }
+    } catch (error) {
+      console.error('❌ Metrics middleware error:', error.message);
+    }
+    
+    // Call original end
+    return originalEnd.apply(res, args);
+  };
   
   next();
 });

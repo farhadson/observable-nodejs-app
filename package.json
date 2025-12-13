@@ -8,8 +8,8 @@
     "seed": "node prisma/seed.js"
   },
   "scripts": {
-    "start": "node --require ./src/config/tracing.js src/server.js",
-    "dev": "node --require ./src/config/tracing.js src/server.js",
+    "start": "node server.js",
+    "dev": "node server.js",
     "prisma:generate": "prisma generate",
     "prisma:migrate": "prisma migrate dev",
     "prisma:studio": "prisma studio",

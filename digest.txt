@@ -1,8 +1,12 @@
 Directory structure:
-└── app-observability/
+└── observable-nodejs-app/
+    ├── README.md
     ├── app.js
-    ├── requirements.txt
+    ├── package.json
+    ├── PREREQUISITES.md
+    ├── README_REQ_FLOW.md
     ├── server.js
+    ├── .env.example
     ├── config/
     │   ├── database.js
     │   ├── database.js[deprecate]
@@ -29,13 +33,256 @@ Directory structure:
     ├── services/
     │   ├── authService.js
     │   ├── chaosService.js
-    │   ├── databaseService.js
+    │   ├── databaseService.js[deprecate]
     │   └── userService.js
-    ├── validators/
-    │   └── userValidator.js
-    └── venv_app-observe/
-        ├── pyvenv.cfg
-        └── lib64 -> lib
+    └── validators/
+        └── userValidator.js
+
+================================================
+FILE: README.md
+================================================
+# Tracing Application with OpenTelemetry & Tempo
+
+A production-ready Node.js application with distributed tracing, metrics, and logging.
+
+---
+
+## Features
+
+- ✅ **OpenTelemetry tracing** to Tempo with automatic instrumentation
+- ✅ **Winston logging** with trace ID injection in every log
+- ✅ **Prometheus metrics** with exemplars linking to traces
+- ✅ **MVC architecture** with Express framework
+- ✅ **PostgreSQL database** with Prisma ORM
+- ✅ **JSON validation** using Joi library
+- ✅ **Complete CRUD operations** ready to test
+- ✅ **Chaos engineering** endpoints for testing
+- ✅ **ES6+ features** annotated for learning
+
+---
+
+## Quick Setup
+
+### 1. Install Dependencies
+
+```
+npm install
+```
+
+### 2. Configure Environment
+
+```
+cp .env.example .env 
+# Edit .env with your configuration
+
+or Create a `.env` file based on `.env.example`
+
+
+Required variables:
+DATABASE_URL="postgresql://user:password@localhost:5432/tracing_db"
+JWT_SECRET="your-secret-key-here"
+JWT_EXPIRES_IN="1h"
+SERVICE_NAME="tracing-app"
+SERVICE_VERSION="1.0.0"
+OTLP_TRACE_DEST_URL="http://localhost:4318/v1/traces"
+OTLP_TRACE_PROTOCOL="http"
+LOG_LEVEL="info"
+LOG_FILE_PATH="./logs/app.log"
+PORT=3000
+METRICS_PORT=9464
+```
+
+### 3. Setup Database
+
+```
+# Generate Prisma Client
+npm run prisma:generate
+
+# Run migrations
+npm run prisma:migrate
+
+# Optional: Seed database
+npm run prisma:seed
+```
+
+### 4. Start Application
+
+```
+npm start
+```
+
+---
+
+## CRUD Operations with curl
+
+### Create User
+
+```
+curl -X POST http://localhost:3000/api/users \
+  -H "Content-Type: application/json" \
+  -d '{"email":"john@example.com","password":"password123","name":"John Doe"}'
+```
+
+### Login
+
+```
+curl -X POST http://localhost:3000/api/auth/login \
+  -H "Content-Type: application/json" \
+  -d '{"email":"john@example.com","password":"password123"}'
+```
+
+### Get All Users
+
+```
+curl http://localhost:3000/api/users
+```
+
+### Get User by ID
+
+```
+curl http://localhost:3000/api/users/1
+```
+
+### Update User
+
+```
+curl -X PUT http://localhost:3000/api/users/1 \
+  -H "Content-Type: application/json" \
+  -d '{"name":"John Updated"}'
+```
+
+### Delete User
+
+```
+curl -X DELETE http://localhost:3000/api/users/1
+```
+
+### Health Check
+
+```
+curl http://localhost:3000/health
+```
+
+---
+
+## Observability Endpoints
+
+| Endpoint | Purpose | Exemplars | Port |
+|----------|---------|-----------|------|
+| `http://localhost:9464/metrics` | OpenTelemetry auto-instrumented metrics | ❌ No | 9464 |
+| `http://localhost:3000/metrics-custom` | Custom metrics with trace exemplars | ✅ Yes | 3000 |
+| `http://localhost:3000/health` | Health check endpoint | N/A | 3000 |
+
+**Traces**: Automatically sent to Tempo at configured endpoint (see `.env`)
+
+### Why Two Metrics Endpoints?
+
+We maintain two metrics endpoints because:
+1. **Port 9464** provides comprehensive auto-instrumented metrics from OpenTelemetry
+2. **Port 3000** provides custom metrics with **exemplars** - allowing you to click from a metric spike in Grafana directly to the trace in Tempo
+
+### Prometheus Configuration
+
+Both should be scraped by Prometheus for complete observability.
+
+## Exemplars
+
+**What are exemplars?**
+Exemplars link individual metric data points to their corresponding traces. When you see a latency spike in Grafana, you can click the exemplar to jump directly to the trace that caused it in Tempo.
+
+### 🎯 Key Takeaways on defining exemplars
+1. Only Histograms and Counters support exemplars (not Gauges)
+2. Strategic placement matters - add exemplars where you need debugging (HTTP, DB, errors)
+3. prom-client only - OpenTelemetry metrics can't have exemplars in current version
+4. We only had 2 because that's a minimal viable implementation
+5. You should add more - especially error counter and HTTP request counter
+6. Would you like me to provide the complete updated files with all exemplar-enabled metrics?
+
+### 📊 Summary: Which Metrics Have Exemplars
+
+
+The `/metrics-custom` endpoint provides these metrics with exemplar support (trace links):
+
+- `http_request_duration_seconds_custom` - HTTP request latency histogram
+- `http_requests_total_custom` - Total HTTP requests counter
+- `database_query_duration_seconds_custom` - Database query latency histogram
+- `application_errors_total` - Application errors counter
+
+| Metric Name | Type | Exemplars | Use Case |
+|-------------|------|-----------|----------|
+| `http_request_duration_seconds_custom` | Histogram | ✅ | Link slow requests to traces |
+| `http_requests_total_custom` | Counter | ✅ | Link request spikes to traces |
+| `database_query_duration_seconds_custom` | Histogram | ✅ | Link slow queries to traces |
+| `application_errors_total` | Counter | ✅ | Link errors to failing traces |
+| `active_users_total` | UpDownCounter | ❌ | Current state, no trace link needed |
+| `http_request_duration_seconds` (OTEL) | Histogram | ❌ | OpenTelemetry limitation |
+| `http_requests_total` (OTEL) | Counter | ❌ | OpenTelemetry limitation |
+
+## Architecture
+
+The application follows **MVC architecture** with:
+
+- **Controllers**: Handle HTTP requests/responses
+- **Services**: Business logic layer
+- **Models**: Data structures (Prisma ORM)
+- **Middleware**: Request processing pipeline
+- **Validators**: Input validation schemas (Joi)
+- **Config**: Configuration modules for tracing, logging, metrics, and database
+
+All operations are traced and linked to metrics via exemplars.
+
+---
+
+## Project Structure
+
+```
+tracing-app/
+├── src/
+│   ├── config/           # Configuration (tracing, metrics, logging, db)
+│   ├── controllers/      # HTTP request handlers
+│   ├── middleware/       # Express middleware
+│   ├── models/           # Prisma ORM models
+│   ├── routes/           # API route definitions
+│   ├── services/         # Business logic
+│   ├── validators/       # Joi validation schemas
+│   ├── app.js            # Express app setup
+│   └── server.js         # Server entry point
+├── prisma/
+│   ├── schema.prisma     # Database schema
+│   └── seed.js           # Database seeding
+├── .env                  # Environment variables
+├── package.json          # Dependencies
+└── README.md             # This file
+```
+
+---
+
+## Additional Documentation
+
+- **[PREREQUISITES.md](./PREREQUISITES.md)** - Installation requirements and setup
+- **[test-scenarios.md](./test-scenarios.md)** - Test scenarios for various use cases
+- **[chaos-testing.md](./chaos-testing.md)** - Chaos engineering examples
+
+---
+
+## Tech Stack
+
+- **Node.js** v18+
+- **Express** v4.19+
+- **PostgreSQL** v14+
+- **Prisma ORM** v5.22+
+- **OpenTelemetry** v0.54+
+- **Winston** (logging)
+- **Joi** (validation)
+- **Prometheus** (metrics)
+- **Tempo** (tracing backend)
+
+---
+
+## License
+
+MIT
+
 
 ================================================
 FILE: app.js
@@ -84,13 +331,42 @@ app.use(traceContextMiddleware);
  * @param {import('express').Response} res - Express response
  * @param {import('express').NextFunction} next - Next middleware
  */
+/**
+ * Metrics middleware - records HTTP request metrics
+ * ✅ FIXED: Better route detection and timing
+ */
 app.use((req, res, next) => {
   const start = Date.now();
   
-  res.on('finish', () => {
-    const duration = (Date.now() - start) / 1000;
-    recordHttpRequest(req.method, req.route?.path || req.path, res.statusCode, duration);
-  });
+  // Capture metrics when response finishes
+  const originalEnd = res.end;
+  res.end = function(...args) {
+    try {
+      const duration = (Date.now() - start) / 1000;
+      
+      // Get route path (most reliable at response time)
+      let route = 'unknown';
+      if (req.route && req.route.path) {
+        route = (req.baseUrl || '') + req.route.path;
+      } else {
+        route = req.path || req.url || 'unknown';
+      }
+      
+      // Clean up route (remove query string)
+      route = route.split('?')[0];
+      
+      // Record metrics
+      if (typeof duration === 'number' && !isNaN(duration) && duration >= 0 &&
+          typeof res.statusCode === 'number' && !isNaN(res.statusCode)) {
+        recordHttpRequest(req.method, route, res.statusCode, duration);
+      }
+    } catch (error) {
+      console.error('❌ Metrics middleware error:', error.message);
+    }
+    
+    // Call original end
+    return originalEnd.apply(res, args);
+  };
   
   next();
 });
@@ -153,33 +429,287 @@ export default app;
 
 
 ================================================
-FILE: requirements.txt
+FILE: package.json
 ================================================
-annotated-types==0.7.0
-anyio==4.12.0
-certifi==2025.11.12
-charset-normalizer==3.4.4
-click==8.3.1
-exceptiongroup==1.3.1
-gitingest==0.3.1
-h11==0.16.0
-httpcore==1.0.9
-httpx==0.28.1
-idna==3.11
-loguru==0.7.3
-pathspec==0.12.1
-pydantic==2.12.5
-pydantic_core==2.41.5
-python-dotenv==1.2.1
-regex==2025.11.3
-requests==2.32.5
-starlette==0.50.0
-StrEnum==0.4.15
-tiktoken==0.12.0
-typing-inspection==0.4.2
-typing_extensions==4.15.0
-urllib3==2.6.2
+{
+  "name": "tracing-app",
+  "version": "1.0.0",
+  "type": "module",
+  "description": "Node.js app with OpenTelemetry tracing to Tempo",
+  "main": "src/server.js",
+  "prisma": {
+    "seed": "node prisma/seed.js"
+  },
+  "scripts": {
+    "start": "node server.js",
+    "dev": "node server.js",
+    "prisma:generate": "prisma generate",
+    "prisma:migrate": "prisma migrate dev",
+    "prisma:studio": "prisma studio",
+    "prisma:seed": "node prisma/seed.js"
+  },
+  "dependencies": {
+    "@opentelemetry/api": "^1.9.0",
+    "@opentelemetry/auto-instrumentations-node": "^0.50.0",
+    "@opentelemetry/exporter-metrics-otlp-grpc": "^0.54.0",
+    "@opentelemetry/exporter-metrics-otlp-http": "^0.54.0",
+    "@opentelemetry/exporter-prometheus": "^0.54.0",
+    "@opentelemetry/exporter-trace-otlp-grpc": "^0.54.0",
+    "@opentelemetry/exporter-trace-otlp-http": "^0.54.0",
+    "@opentelemetry/instrumentation": "^0.54.0",
+    "@opentelemetry/instrumentation-express": "^0.43.0",
+    "@opentelemetry/instrumentation-http": "^0.54.0",
+    "@opentelemetry/resources": "^1.28.0",
+    "@opentelemetry/sdk-metrics": "^1.28.0",
+    "@opentelemetry/sdk-node": "^0.54.0",
+    "@opentelemetry/sdk-trace-node": "^1.28.0",
+    "@opentelemetry/semantic-conventions": "^1.28.0",
+    "@prisma/client": "^5.22.0",
+    "bcrypt": "^5.1.1",
+    "dotenv": "^16.4.5",
+    "express": "^4.19.2",
+    "joi": "^17.13.3",
+    "jsonwebtoken": "^9.0.2",
+    "prom-client": "^15.1.3",
+    "winston": "^3.14.2"
+  },
+  "devDependencies": {
+    "prisma": "^5.22.0"
+  }
+}
 
+
+
+================================================
+FILE: PREREQUISITES.md
+================================================
+# Prerequisites and Installation Guide
+
+## Required Software
+
+### 1. Node.js (v18+ recommended)
+
+**Check version:**
+```
+node --version  # Should be >= 18.0.0
+npm --version   # Should be >= 9.0.0
+```
+
+**Install via nvm (recommended):**
+```
+curl -o- https://raw.githubusercontent.com/nvm-sh/nvm/v0.39.0/install.sh | bash
+nvm install 18
+nvm use 18
+```
+
+### 2. PostgreSQL (v14+ recommended)
+
+**Ubuntu/Debian:**
+```
+sudo apt update
+sudo apt install postgresql postgresql-contrib postgresql-client
+```
+
+**macOS:**
+```
+brew install postgresql@14
+brew services start postgresql@14
+```
+
+**Check version:**
+```
+psql --version  # Should be >= 14.0
+```
+### Connect to PostgreSQL as postgres user
+`sudo -u postgres psql`
+
+### Inside psql console, create the database:
+`CREATE DATABASE tracing_db;`
+
+### Verify it was created:
+`\l`
+
+### Exit psql:
+`\q`
+
+
+**Or use Docker:**
+```
+docker run --name postgres \
+  -e POSTGRES_PASSWORD=postgres \
+  -e POSTGRES_DB=tracing_db \
+  -p 5432:5432 \
+  -d postgres:14
+```
+
+### 3. Prisma CLI
+
+Installed automatically via npm (in devDependencies).
+
+**After npm install, verify:**
+```
+npx prisma --version
+```
+
+### 4. Tempo (for tracing backend)
+
+**Create `docker-compose.yml`:**
+```
+version: '3'
+services:
+  tempo:
+    image: grafana/tempo:latest
+    ports:
+      - "4317:4317"  # gRPC
+      - "4318:4318"  # HTTP
+    command: ["-config.file=/etc/tempo.yaml"]
+    volumes:
+      - ./tempo.yaml:/etc/tempo.yaml
+```
+
+**Create `tempo.yaml`:**
+```
+server:
+  http_listen_port: 3200
+
+distributor:
+  receivers:
+    otlp:
+      protocols:
+        grpc:
+          endpoint: 0.0.0.0:4317
+        http:
+          endpoint: 0.0.0.0:4318
+
+storage:
+  trace:
+    backend: local
+    local:
+      path: /tmp/tempo/traces
+
+metrics_generator:
+  storage:
+    path: /tmp/tempo/generator
+```
+
+**Start Tempo:**
+```
+docker-compose up -d
+```
+
+### 5. Prometheus (for metrics)
+
+**Create `prometheus.yml`:**
+```
+global:
+  scrape_interval: 15s
+
+scrape_configs:
+  - job_name: 'node-app'
+    static_configs:
+      - targets: ['localhost:9464']
+  
+  - job_name: 'node-app-custom'
+    static_configs:
+      - targets: ['localhost:3000']
+    metrics_path: '/metrics-custom'
+```
+
+**Run Prometheus:**
+```
+docker run -p 9090:9090 \
+  -v $(pwd)/prometheus.yml:/etc/prometheus/prometheus.yml \
+  prom/prometheus
+```
+
+---
+
+## Installation Steps
+
+### 1. Clone and Install Dependencies
+
+```
+npm install
+```
+
+### 2. Setup Database
+
+```
+# Create .env file
+cp .env.example .env
+
+# Edit DATABASE_URL in .env
+# Format: postgresql://USER:PASSWORD@HOST:PORT/DATABASE
+
+# Generate Prisma Client
+npm run prisma:generate
+
+# Run migrations (creates tables)
+npm run prisma:migrate
+npx prisma migrate dev --name init
+
+# Seed database (optional)
+npm run prisma:seed
+```
+
+### 3. Start Application
+
+```
+# Development
+npm run dev
+
+# Production
+npm start
+```
+
+### 4. Verify Installation
+
+```
+# Check health
+curl http://localhost:3000/health
+
+# Check OpenTelemetry metrics
+curl http://localhost:9464/metrics
+
+# Check custom metrics with exemplars
+curl http://localhost:3000/metrics-custom
+```
+
+---
+
+## Package Versions Used
+
+- **Node.js**: v18+ (LTS)
+- **PostgreSQL**: v14+
+- **Prisma**: v5.22.0
+- **Express**: v4.19.2
+- **OpenTelemetry SDK**: v0.54.0
+- **Winston**: v3.14.2
+- **Joi**: v17.13.3
+
+---
+
+## Optional Tools
+
+- **Prisma Studio**: GUI for database
+  ```
+  npm run prisma:studio
+  ```
+- **k6**: Load testing
+  ```
+  brew install k6
+  ```
+- **curl**: API testing (pre-installed on most systems)
+- **Docker**: For running Tempo/Prometheus
+```
+
+
+
+
+================================================
+FILE: README_REQ_FLOW.md
+================================================
+[Binary file]
 
 
 ================================================
@@ -190,6 +720,9 @@ FILE: server.js
  * Starts the HTTP server and handles graceful shutdown.
  * @module server
  */
+
+// ✅ Import tracing FIRST (before anything else)
+import './config/tracing.js';
 
 import app from './app.js';
 import logger from './config/logging.js';
@@ -225,6 +758,48 @@ process.on('SIGTERM', () => {
   });
 });
 
+
+
+================================================
+FILE: .env.example
+================================================
+# Server Configuration
+PORT=3000
+NODE_ENV=development
+
+# Database Configuration (Prisma format)
+### make sure database(tracing_db) exists and also does not have any passwords
+### edit postgres sudo nano /etc/postgresql/14/main/pg_hba.conf
+###host    all             all             127.0.0.1/32            trust
+DATABASE_URL="postgresql://postgres@localhost:5432/tracing_db?schema=public"
+
+# Tracing Configuration
+# Use http:// for HTTP protocol, grpc:// for gRPC protocol
+#OTLP_TRACE_DEST_URL=http://localhost:4318/v1/traces
+#OTLP_TRACE_PROTOCOL=http
+OTLP_TRACE_DEST_URL=localhost:4317
+OTLP_TRACE_PROTOCOL=grpc
+
+# Options: http or grpc
+# http: Uses HTTP/1.1 (default, port 4318)
+# grpc: Uses HTTP/2 over gRPC (port 4317)
+
+# Service Information
+SERVICE_NAME=tracing-app
+SERVICE_VERSION=1.0.0
+
+# Metrics Configuration (Prometheus pulls metrics, not pushed)
+METRICS_PORT=9464
+
+# Logging Configuration
+LOG_LEVEL=info
+LOG_FILE_PATH=./logs/app.log
+
+# JWT Secret
+### in prod use openssl to create a strong string: `openssl rand -hex 32`
+### note: token gets expired provided secret never expires
+JWT_SECRET=your-secret-key-change-in-production
+JWT_EXPIRES_IN=1h
 
 
 ================================================
@@ -552,6 +1127,8 @@ const activeUsers = meter.createUpDownCounter('active_users_total', {
  * @constant
  */
 const promRegister = new client.Registry();
+//Enable OpenMetrics support for exemplars
+promRegister.setContentType(client.Registry.OPENMETRICS_CONTENT_TYPE);
 
 /**
  * HTTP request duration histogram WITH EXEMPLARS
@@ -568,7 +1145,8 @@ const httpDurationHistogram = new client.Histogram({
   help: 'Duration of HTTP requests in seconds with exemplars',
   labelNames: ['method', 'route', 'status_code'],
   buckets: [0.001, 0.01, 0.1, 0.5, 1, 2, 5],
-  enableExemplars: true,
+  //// When OpenMetrics registry is enabled, The registry itslef will handle exemplars automatically.
+  // enableExemplars: true, 
   registers: [promRegister],
 });
 
@@ -586,7 +1164,7 @@ const httpRequestCounterCustom = new client.Counter({
   name: 'http_requests_total_custom',
   help: 'Total number of HTTP requests with exemplars',
   labelNames: ['method', 'route', 'status_code'],
-  enableExemplars: true,
+  // enableExemplars: true,
   registers: [promRegister],
 });
 
@@ -605,7 +1183,7 @@ const dbQueryHistogram = new client.Histogram({
   help: 'Duration of database queries with exemplars',
   labelNames: ['operation', 'table'],
   buckets: [0.001, 0.01, 0.05, 0.1, 0.5, 1],
-  enableExemplars: true,
+  // enableExemplars: true,
   registers: [promRegister],
 });
 
@@ -623,7 +1201,7 @@ const errorCounter = new client.Counter({
   name: 'application_errors_total',
   help: 'Total number of application errors with exemplars',
   labelNames: ['error_type', 'route'],
-  enableExemplars: true,
+  // enableExemplars: true,
   registers: [promRegister],
 });
 
@@ -631,120 +1209,103 @@ const errorCounter = new client.Counter({
 
 /**
  * Record HTTP request metrics with trace exemplar
- * Records both OpenTelemetry metrics (no exemplar) and custom metrics (with exemplar)
- * Automatically extracts trace context from active span
- * @param {string} method - HTTP method (GET, POST, PUT, DELETE, etc)
- * @param {string} route - Express route path (/api/users/:id)
- * @param {number} statusCode - HTTP status code (200, 404, 500, etc)
+ * Records both OpenTelemetry metrics and custom prom-client metrics
+ * Exemplars are automatically captured from OpenTelemetry context
+ * @param {string} method - HTTP method
+ * @param {string} route - Route path
+ * @param {number} statusCode - HTTP status code
  * @param {number} duration - Request duration in seconds
- * @returns {void}
- * 
- * @example
- * // Called automatically by metrics middleware in app.js
- * recordHttpRequest('POST', '/api/users', 201, 0.145);
- * 
- * @example
- * // Results in Prometheus metrics:
- * // http_requests_total_custom{method="POST",route="/api/users",status_code="201"} 1
- * // http_request_duration_seconds_custom{method="POST",route="/api/users",status_code="201"} 0.145
- * // With exemplar: {traceId="abc123...", spanId="xyz789..."}
  */
 const recordHttpRequest = (method, route, statusCode, duration) => {
-  // Record OpenTelemetry metrics (no exemplars)
-  httpRequestCounter_OTEL.add(1, { method, route, status_code: statusCode });
-  httpRequestDuration_OTEL.record(duration, { method, route, status_code: statusCode });
-
-  // Get current span for exemplar
-  const span = trace.getSpan(context.active());
-  const exemplarLabels = {};
+  // Validate inputs
+  if (typeof duration !== 'number' || isNaN(duration) || duration < 0) {
+    console.error('❌ Invalid duration:', { method, route, statusCode, duration });
+    return;
+  }
   
-  if (span) {
-    const spanContext = span.spanContext();
-    exemplarLabels.traceId = spanContext.traceId;
-    exemplarLabels.spanId = spanContext.spanId;
+  if (typeof statusCode !== 'number' || isNaN(statusCode)) {
+    console.error('❌ Invalid statusCode:', { method, route, statusCode, duration });
+    return;
   }
 
-  // Record prom-client metrics with exemplars
-  httpRequestCounterCustom.inc(
-    { method, route, status_code: statusCode },
-    1,
-    exemplarLabels
-  );
+  const routePath = String(route || 'unknown');
+  const methodStr = String(method || 'UNKNOWN');
   
-  httpDurationHistogram.observe(
-    { method, route, status_code: statusCode },
-    duration,
-    exemplarLabels
-  );
+  // OpenTelemetry metrics
+  try {
+    httpRequestDuration_OTEL.record(duration, { 
+      method: methodStr, 
+      route: routePath, 
+      status_code: statusCode 
+    });
+    httpRequestCounter_OTEL.add(1, { 
+      method: methodStr, 
+      route: routePath, 
+      status_code: statusCode 
+    });
+  } catch (error) {
+    console.error('❌ OpenTelemetry metrics error:', error.message);
+  }
+
+  // prom-client metrics with automatic exemplar capture
+  try {
+    const labels = { 
+      method: methodStr, 
+      route: routePath, 
+      status_code: statusCode 
+    };
+    
+    // Exemplars are automatically captured from active OpenTelemetry span
+    httpDurationHistogram.observe(labels, duration);
+    httpRequestCounterCustom.inc(labels, 1);
+    
+  } catch (error) {
+    console.error('❌ prom-client metrics error:', {
+      error: error.message,
+      method: methodStr,
+      route: routePath,
+      statusCode,
+      duration
+    });
+  }
 };
 
 /**
  * Record database query metrics with trace exemplar
- * Records both OpenTelemetry metrics (no exemplar) and custom metrics (with exemplar)
- * Automatically extracts trace context from active span
- * @param {string} operation - Database operation type (CREATE, READ, UPDATE, DELETE, RAW_SQL)
- * @param {string} table - Database table name (users, posts, etc)
+ * Exemplars are automatically captured from OpenTelemetry context
+ * @param {string} operation - Database operation type
+ * @param {string} table - Database table name
  * @param {number} duration - Query duration in seconds
- * @returns {void}
- * 
- * @example
- * // Called by databaseService or models
- * recordDatabaseQuery('CREATE', 'users', 0.052);
- * recordDatabaseQuery('RAW_SQL', 'multiple', 0.123);
- * 
- * @example
- * // Results in Prometheus metrics:
- * // database_query_duration_seconds_custom{operation="CREATE",table="users"} 0.052
- * // With exemplar: {traceId="abc123...", spanId="xyz789..."}
  */
 const recordDatabaseQuery = (operation, table, duration) => {
   // OpenTelemetry metric
-  databaseQueryDuration_OTEL.record(duration, { operation, table });
-
-  // Get exemplar
-  const span = trace.getSpan(context.active());
-  const exemplarLabels = {};
-  
-  if (span) {
-    const spanContext = span.spanContext();
-    exemplarLabels.traceId = spanContext.traceId;
-    exemplarLabels.spanId = spanContext.spanId;
+  try {
+    databaseQueryDuration_OTEL.record(duration, { operation, table });
+  } catch (error) {
+    console.error('❌ OpenTelemetry database metric error:', error.message);
   }
 
-  // prom-client metric with exemplar
-  dbQueryHistogram.observe({ operation, table }, duration, exemplarLabels);
+  // prom-client metric with automatic exemplar capture
+  try {
+    dbQueryHistogram.observe({ operation, table }, duration);
+  } catch (error) {
+    console.error('❌ prom-client database metric error:', error.message);
+  }
 };
 
 /**
  * Record application error with trace exemplar
- * Links error occurrences to the trace where the error happened
- * Automatically extracts trace context from active span
- * @param {string} errorType - Error type/name (ValidationError, DatabaseError, UnauthorizedError, etc)
- * @param {string} route - Route where error occurred (/api/users, /api/auth/login, etc)
- * @returns {void}
- * 
- * @example
- * // Called by error handler middleware
- * recordError('ValidationError', '/api/users');
- * recordError('DatabaseError', '/api/posts');
- * 
- * @example
- * // Results in Prometheus metrics:
- * // application_errors_total{error_type="ValidationError",route="/api/users"} 1
- * // With exemplar: {traceId="abc123...", spanId="xyz789..."}
- * // Click exemplar in Grafana → Jump to trace in Tempo showing the error
+ * Exemplars are automatically captured from OpenTelemetry context
+ * @param {string} errorType - Error type/name
+ * @param {string} route - Route where error occurred
  */
 const recordError = (errorType, route) => {
-  const span = trace.getSpan(context.active());
-  const exemplarLabels = {};
-  
-  if (span) {
-    const spanContext = span.spanContext();
-    exemplarLabels.traceId = spanContext.traceId;
-    exemplarLabels.spanId = spanContext.spanId;
+  try {
+    // Exemplar automatically captured from active span
+    errorCounter.inc({ error_type: errorType, route }, 1);
+  } catch (error) {
+    console.error('❌ Error recording error metric:', error.message);
   }
-
-  errorCounter.inc({ error_type: errorType, route }, 1, exemplarLabels);
 };
 
 /**
@@ -2374,7 +2935,7 @@ export default new ChaosService();
 
 
 ================================================
-FILE: services/databaseService.js
+FILE: services/databaseService.js[deprecate]
 ================================================
 /**
  * @fileoverview Legacy database service wrapper for raw SQL queries.
@@ -2788,20 +3349,5 @@ const loginSchema = Joi.object({
 });
 
 export { createUserSchema, updateUserSchema, loginSchema };
-
-
-
-================================================
-FILE: venv_app-observe/pyvenv.cfg
-================================================
-home = /usr/bin
-include-system-site-packages = false
-version = 3.10.12
-
-
-
-================================================
-SYMLINK: venv_app-observe/lib64 -> lib
-================================================
 
 

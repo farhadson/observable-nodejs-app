@@ -35,6 +35,18 @@ brew services start postgresql@14
 ```
 psql --version  # Should be >= 14.0
 ```
+### Connect to PostgreSQL as postgres user
+`sudo -u postgres psql`
+
+### Inside psql console, create the database:
+`CREATE DATABASE tracing_db;`
+
+### Verify it was created:
+`\l`
+
+### Exit psql:
+`\q`
+
 
 **Or use Docker:**
 ```

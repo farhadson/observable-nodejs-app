@@ -4,6 +4,9 @@
  * @module server
  */
 
+// ✅ Import tracing FIRST (before anything else)
+import './config/tracing.js';
+
 import app from './app.js';
 import logger from './config/logging.js';
 import dotenv from 'dotenv';
