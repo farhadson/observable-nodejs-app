@@ -1,8 +1,8 @@
 /**
  * @fileoverview OpenTelemetry metrics and Prometheus exporter configuration.
- * Provides metrics instrumentation with exemplar support linking metrics to traces.
+ * Provides metrics instrumentation for application observability.
  * Implements dual metrics strategy: OpenTelemetry auto-instrumentation (port 9464)
- * and custom prom-client metrics with exemplars (port 3000).
+ * and custom prom-client metrics (port 3000).
  * @module config/metrics
  */
 
@@ -69,7 +69,6 @@ const meter = meterProvider.getMeter('app-metrics');
  * Tracks duration of HTTP requests in seconds
  * @type {Histogram}
  * @constant
- * @note Does NOT support exemplars - use httpDurationHistogram for exemplar support
  */
 const httpRequestDuration_OTEL = meter.createHistogram('http_request_duration_seconds', {
   description: 'Duration of HTTP requests in seconds',
@@ -81,7 +80,6 @@ const httpRequestDuration_OTEL = meter.createHistogram('http_request_duration_se
  * Tracks total number of HTTP requests
  * @type {Counter}
  * @constant
- * @note Does NOT support exemplars - use httpRequestCounterCustom for exemplar support
  */
 const httpRequestCounter_OTEL = meter.createCounter('http_requests_total', {
   description: 'Total number of HTTP requests',
@@ -92,7 +90,6 @@ const httpRequestCounter_OTEL = meter.createCounter('http_requests_total', {
  * Tracks duration of database queries in seconds
  * @type {Histogram}
  * @constant
- * @note Does NOT support exemplars - use dbQueryHistogram for exemplar support
  */
 const databaseQueryDuration_OTEL = meter.createHistogram('database_query_duration_seconds', {
   description: 'Duration of database queries in seconds',
@@ -104,29 +101,36 @@ const databaseQueryDuration_OTEL = meter.createHistogram('database_query_duratio
  * Tracks current number of active users in the system
  * @type {UpDownCounter}
  * @constant
- * @note Gauges/UpDownCounters don't support exemplars by design (point-in-time values)
  */
 const activeUsers = meter.createUpDownCounter('active_users_total', {
   description: 'Total number of active users',
 });
 
 // ============ CUSTOM PROM-CLIENT METRICS (Port 3000) ============
-// These DO support exemplars (trace links)
+// These are custom metrics separate from OpenTelemetry
 
 /**
  * Custom Prometheus registry for prom-client metrics
- * Separate from OpenTelemetry registry to enable exemplar support
+ * Separate from OpenTelemetry registry
  * Exposed at http://localhost:3000/metrics-custom
  * @type {Registry}
  * @constant
  */
 const promRegister = new client.Registry();
-//Enable OpenMetrics support for exemplars
-promRegister.setContentType(client.Registry.OPENMETRICS_CONTENT_TYPE);
+
+// Enable OpenMetrics format (supports exemplars but we're not using them yet)
+// promRegister.setContentType(client.Registry.OPENMETRICS_CONTENT_TYPE);
+
+// Use standard Prometheus text format (displays in browser)
+// Note: OpenMetrics format (OPENMETRICS_CONTENT_TYPE) is needed for exemplars,
+// but causes browsers to download instead of display. We'll use standard format for now.
+
+// Use standard Prometheus text format (displays in browser)
+promRegister.setContentType(client.Registry.PROMETHEUS_CONTENT_TYPE);
 
 /**
- * HTTP request duration histogram WITH EXEMPLARS
- * Tracks HTTP request latency and links data points to traces
+ * HTTP request duration histogram (custom)
+ * Tracks HTTP request latency with custom buckets
  * Labels: method (GET/POST/etc), route (/api/users), status_code (200/404/etc)
  * @type {Histogram}
  * @constant
@@ -136,17 +140,15 @@ promRegister.setContentType(client.Registry.OPENMETRICS_CONTENT_TYPE);
  */
 const httpDurationHistogram = new client.Histogram({
   name: 'http_request_duration_seconds_custom',
-  help: 'Duration of HTTP requests in seconds with exemplars',
+  help: 'Duration of HTTP requests in seconds',
   labelNames: ['method', 'route', 'status_code'],
   buckets: [0.001, 0.01, 0.1, 0.5, 1, 2, 5],
-  //// When OpenMetrics registry is enabled, The registry itslef will handle exemplars automatically.
-  // enableExemplars: true, 
   registers: [promRegister],
 });
 
 /**
- * HTTP request counter WITH EXEMPLARS
- * Tracks total HTTP requests and links spikes to specific traces
+ * HTTP request counter (custom)
+ * Tracks total HTTP requests
  * Labels: method (GET/POST/etc), route (/api/users), status_code (200/404/etc)
  * @type {Counter}
  * @constant
@@ -156,15 +158,14 @@ const httpDurationHistogram = new client.Histogram({
  */
 const httpRequestCounterCustom = new client.Counter({
   name: 'http_requests_total_custom',
-  help: 'Total number of HTTP requests with exemplars',
+  help: 'Total number of HTTP requests',
   labelNames: ['method', 'route', 'status_code'],
-  // enableExemplars: true,
   registers: [promRegister],
 });
 
 /**
- * Database query duration histogram WITH EXEMPLARS
- * Tracks database query latency and links slow queries to traces
+ * Database query duration histogram (custom)
+ * Tracks database query latency
  * Labels: operation (CREATE/READ/UPDATE/DELETE), table (users/posts/etc)
  * @type {Histogram}
  * @constant
@@ -174,16 +175,15 @@ const httpRequestCounterCustom = new client.Counter({
  */
 const dbQueryHistogram = new client.Histogram({
   name: 'database_query_duration_seconds_custom',
-  help: 'Duration of database queries with exemplars',
+  help: 'Duration of database queries',
   labelNames: ['operation', 'table'],
   buckets: [0.001, 0.01, 0.05, 0.1, 0.5, 1],
-  // enableExemplars: true,
   registers: [promRegister],
 });
 
 /**
- * Application error counter WITH EXEMPLARS
- * Tracks errors and links error spikes to failing traces
+ * Application error counter (custom)
+ * Tracks errors by type and route
  * Labels: error_type (ValidationError/DatabaseError/etc), route (/api/users)
  * @type {Counter}
  * @constant
@@ -193,39 +193,41 @@ const dbQueryHistogram = new client.Histogram({
  */
 const errorCounter = new client.Counter({
   name: 'application_errors_total',
-  help: 'Total number of application errors with exemplars',
+  help: 'Total number of application errors',
   labelNames: ['error_type', 'route'],
-  // enableExemplars: true,
   registers: [promRegister],
 });
 
 // ============ RECORDING FUNCTIONS ============
 
 /**
- * Record HTTP request metrics with trace exemplar
+ * Record HTTP request metrics
  * Records both OpenTelemetry metrics and custom prom-client metrics
- * Exemplars are automatically captured from OpenTelemetry context
- * @param {string} method - HTTP method
- * @param {string} route - Route path
- * @param {number} statusCode - HTTP status code
+ * @param {string} method - HTTP method (GET, POST, etc)
+ * @param {string} route - Route path (/api/users, /health, etc)
+ * @param {number} statusCode - HTTP status code (200, 404, etc)
  * @param {number} duration - Request duration in seconds
+ * @returns {void}
+ * 
+ * @example
+ * recordHttpRequest('GET', '/api/users', 200, 0.123);
  */
 const recordHttpRequest = (method, route, statusCode, duration) => {
   // Validate inputs
   if (typeof duration !== 'number' || isNaN(duration) || duration < 0) {
-    console.error('❌ Invalid duration:', { method, route, statusCode, duration });
+    console.error('❌ Invalid duration for metrics:', { method, route, statusCode, duration });
     return;
   }
   
   if (typeof statusCode !== 'number' || isNaN(statusCode)) {
-    console.error('❌ Invalid statusCode:', { method, route, statusCode, duration });
+    console.error('❌ Invalid statusCode for metrics:', { method, route, statusCode, duration });
     return;
   }
 
   const routePath = String(route || 'unknown');
   const methodStr = String(method || 'UNKNOWN');
   
-  // OpenTelemetry metrics
+  // Record OpenTelemetry metrics
   try {
     httpRequestDuration_OTEL.record(duration, { 
       method: methodStr, 
@@ -238,10 +240,10 @@ const recordHttpRequest = (method, route, statusCode, duration) => {
       status_code: statusCode 
     });
   } catch (error) {
-    console.error('❌ OpenTelemetry metrics error:', error.message);
+    console.error('❌ Error recording OpenTelemetry metrics:', error.message);
   }
 
-  // prom-client metrics with automatic exemplar capture
+  // Record custom prom-client metrics
   try {
     const labels = { 
       method: methodStr, 
@@ -249,12 +251,12 @@ const recordHttpRequest = (method, route, statusCode, duration) => {
       status_code: statusCode 
     };
     
-    // Exemplars are automatically captured from active OpenTelemetry span
+    // Simple recording without exemplars (stable and working)
     httpDurationHistogram.observe(labels, duration);
     httpRequestCounterCustom.inc(labels, 1);
     
   } catch (error) {
-    console.error('❌ prom-client metrics error:', {
+    console.error('❌ Error recording prom-client metrics:', {
       error: error.message,
       method: methodStr,
       route: routePath,
@@ -265,37 +267,56 @@ const recordHttpRequest = (method, route, statusCode, duration) => {
 };
 
 /**
- * Record database query metrics with trace exemplar
- * Exemplars are automatically captured from OpenTelemetry context
- * @param {string} operation - Database operation type
- * @param {string} table - Database table name
+ * Record database query metrics
+ * Records both OpenTelemetry and custom prom-client metrics
+ * @param {string} operation - Database operation type (CREATE, READ, UPDATE, DELETE, RAW_SQL)
+ * @param {string} table - Database table name (users, posts, etc)
  * @param {number} duration - Query duration in seconds
+ * @returns {void}
+ * 
+ * @example
+ * // Called by databaseService or models
+ * recordDatabaseQuery('CREATE', 'users', 0.052);
+ * recordDatabaseQuery('RAW_SQL', 'multiple', 0.123);
+ * 
+ * @example
+ * // Results in Prometheus metrics:
+ * // database_query_duration_seconds_custom{operation="CREATE",table="users"} 0.052
  */
 const recordDatabaseQuery = (operation, table, duration) => {
   // OpenTelemetry metric
   try {
     databaseQueryDuration_OTEL.record(duration, { operation, table });
   } catch (error) {
-    console.error('❌ OpenTelemetry database metric error:', error.message);
+    console.error('❌ Error recording OpenTelemetry database metric:', error.message);
   }
 
-  // prom-client metric with automatic exemplar capture
+  // prom-client metric
   try {
     dbQueryHistogram.observe({ operation, table }, duration);
   } catch (error) {
-    console.error('❌ prom-client database metric error:', error.message);
+    console.error('❌ Error recording prom-client database metric:', error.message);
   }
 };
 
 /**
- * Record application error with trace exemplar
- * Exemplars are automatically captured from OpenTelemetry context
- * @param {string} errorType - Error type/name
- * @param {string} route - Route where error occurred
+ * Record application error
+ * Links error occurrences for tracking and alerting
+ * @param {string} errorType - Error type/name (ValidationError, DatabaseError, UnauthorizedError, etc)
+ * @param {string} route - Route where error occurred (/api/users, /api/auth/login, etc)
+ * @returns {void}
+ * 
+ * @example
+ * // Called by error handler middleware
+ * recordError('ValidationError', '/api/users');
+ * recordError('DatabaseError', '/api/posts');
+ * 
+ * @example
+ * // Results in Prometheus metrics:
+ * // application_errors_total{error_type="ValidationError",route="/api/users"} 1
  */
 const recordError = (errorType, route) => {
   try {
-    // Exemplar automatically captured from active span
     errorCounter.inc({ error_type: errorType, route }, 1);
   } catch (error) {
     console.error('❌ Error recording error metric:', error.message);
@@ -306,29 +327,29 @@ const recordError = (errorType, route) => {
  * @exports
  * @description Exports metrics and recording functions for application use
  * 
- * OpenTelemetry metrics (port 9464, no exemplars):
+ * OpenTelemetry metrics (port 9464, auto-exported):
  * - httpRequestDuration: HTTP request duration histogram
  * - httpRequestCounter: HTTP request counter
  * - databaseQueryDuration: Database query duration histogram
  * - activeUsers: Active users gauge
  * 
- * Recording functions (auto-add exemplars):
- * - recordHttpRequest: Record HTTP request with trace link
- * - recordDatabaseQuery: Record database query with trace link
- * - recordError: Record error with trace link
+ * Recording functions:
+ * - recordHttpRequest: Record HTTP request metrics
+ * - recordDatabaseQuery: Record database query metrics
+ * - recordError: Record error metrics
  * 
  * Registry:
  * - promRegister: Custom registry for /metrics-custom endpoint
  * - meterProvider: OpenTelemetry meter provider
  */
 export {
-  // OpenTelemetry metrics (no exemplars)
+  // OpenTelemetry metrics (port 9464)
   httpRequestDuration_OTEL as httpRequestDuration,
   httpRequestCounter_OTEL as httpRequestCounter,
   databaseQueryDuration_OTEL as databaseQueryDuration,
   activeUsers,
   
-  // Recording functions (with exemplars)
+  // Recording functions
   recordHttpRequest,
   recordDatabaseQuery,
   recordError,
