@@ -20,7 +20,20 @@ dotenv.config();
 // ============ OPENTELEMETRY METRICS (Port 9464) ============
 // These are auto-exported but DON'T support exemplars
 
-// helper: parse OTEL_RESOURCE_ATTRIBUTES like "key1=val1,key2=val2"
+/**
+ * Parse OpenTelemetry resource attributes from an env-style string.
+ *
+ * Expected format is a comma-separated list of `key=value` pairs, e.g.
+ * `deployment.environment=dev,service.namespace=demo`.
+ * Invalid or empty pairs are ignored.
+ *
+ * @param {string | undefined | null} raw - Raw attributes string (usually from OTEL_RESOURCE_ATTRIBUTES).
+ * @returns {Record<string, string>} Parsed attributes as a key/value map.
+ *
+ * @example
+ * parseOtelResourceAttributes('deployment.environment=dev,service.namespace=demo');
+ * // => { 'deployment.environment': 'dev', 'service.namespace': 'demo' }
+ */
 const parseOtelResourceAttributes = (raw) => {
   if (!raw) return {};
   return Object.fromEntries(
@@ -257,6 +270,14 @@ const errorCounterCustom = new client.Counter({
 
 // ============ RECORDING FUNCTIONS ============
 
+/**
+ * Build prom-client exemplar labels from the currently active span.
+ *
+ * When a span is active, returns `{ traceId, spanId }` so Prometheus exemplars can link
+ * a metric datapoint to a trace in Tempo.
+ *
+ * @returns {{ traceId: string, spanId: string } | undefined} Exemplar labels, or undefined if no active span exists.
+ */
 const getExemplarLabels = () => {
   const span = trace.getSpan(context.active());
   if (!span) return undefined;

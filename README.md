@@ -1,241 +1,158 @@
+```json
+{
+  "title": "Tracing Application (Express + Prisma + OpenTelemetry)",
+  "docType": "README",
+  "purpose": "How to run the service locally, understand ports/endpoints, and verify tracing/metrics/logging.",
+  "audience": ["developers", "SRE", "observability learners"],
+  "entrypoints": ["server.js", "app.js"],
+  "relatedDocs": ["PREREQUISITES.md", "BASIC_TESTS.md", "README_REQ_FLOW.md"],
+  "lastUpdated": "2025-12-14"
+}
+```
+
 # Tracing Application with OpenTelemetry & Tempo
 
-A production-ready Node.js application with distributed tracing, metrics, and logging.
+A Node.js (ESM) Express service instrumented for tracing (OTLP to Tempo), metrics (Prometheus), and logs (Winston + optional OpenTelemetry LogRecords), with PostgreSQL persistence via Prisma.
 
----
+## How the service boots (important)
 
-## Features
+`npm start` runs `node server.js`.
 
-- ✅ **OpenTelemetry tracing** to Tempo with automatic instrumentation
-- ✅ **Winston logging** with trace ID injection in every log
-- ✅ **Prometheus metrics** with exemplars linking to traces
-- ✅ **MVC architecture** with Express framework
-- ✅ **PostgreSQL database** with Prisma ORM
-- ✅ **JSON validation** using Joi library
-- ✅ **Complete CRUD operations** ready to test
-- ✅ **Chaos engineering** endpoints for testing
-- ✅ **ES6+ features** annotated for learning
+`server.js` loads observability *before* the Express app:
+1. Tracing is initialized first (`config/tracing.js`) so auto-instrumentation can hook modules early.
+2. OpenTelemetry Logs pipeline is initialized (`config/otel-logs.js`) to write LogRecords to a local JSONL file (no network export).
+3. Then `app.js` is imported and the HTTP server starts.
 
----
+## Ports and endpoints (the 3-port setup)
 
-## Quick Setup
+This app can expose **three different ports** depending on environment variables:
 
-### 1. Install Dependencies
+### 1) App port: `PORT` (default `3000`)
+This is the main HTTP API server created by Express.
 
-```
-npm install
-```
+- Health:
+  - `GET /health`
+- API routes:
+  - Auth:
+    - `POST /api/auth/login`
+  - Users:
+    - `GET /api/users`
+    - `GET /api/users/:id`
+    - `POST /api/users`
+    - `PUT /api/users/:id`
+    - `DELETE /api/users/:id`
+  - Chaos (testing endpoints):
+    - `POST /api/chaos/latency`
+    - `POST /api/chaos/random-failure`
+    - `POST /api/chaos/memory-leak`
+    - `POST /api/chaos/cpu-spike`
+    - `POST /api/chaos/database-error`
+    - `POST /api/chaos/disable-all`
+    - `GET /api/chaos/status`
+    - `POST /api/chaos/circuit-breaker-test`
 
-### 2. Configure Environment
+### 2) OpenTelemetry Prometheus exporter port: `METRICS_PORT` (default `9464`)
+This port is opened by the OpenTelemetry Prometheus exporter created in `config/metrics.js`.
 
-```
-cp .env.example .env 
-# Edit .env with your configuration
+- Endpoint:
+  - `GET http://localhost:9464/metrics` (path is always `/metrics` for this exporter)
 
-or Create a `.env` file based on `.env.example`
+Notes:
+- These metrics come from the OpenTelemetry SDK MeterProvider and do **not** include exemplars in the current implementation.
+- This endpoint is intended for Prometheus scraping.
 
+### 3) Custom prom-client metrics port: `METRICS_CUSTOM_PORT` (optional; example `9465`)
+This is where confusion often happens, because `/metrics-custom` can appear on **either** port 3000 **or** 9465 depending on env.
 
-Required variables:
-DATABASE_URL="postgresql://user:password@localhost:5432/tracing_db"
-JWT_SECRET="your-secret-key-here"
-JWT_EXPIRES_IN="1h"
-SERVICE_NAME="tracing-app"
-SERVICE_VERSION="1.0.0"
-OTLP_TRACE_DEST_URL="http://localhost:4318/v1/traces"
-OTLP_TRACE_PROTOCOL="http"
-LOG_LEVEL="info"
-LOG_FILE_PATH="./logs/app.log"
-PORT=3000
-METRICS_PORT=9464
-```
+The app’s custom metrics are built using `prom-client` and are served in one of two ways:
 
-### 3. Setup Database
+#### Option A (recommended): dedicate a separate port (e.g., `9465`)
+If `METRICS_CUSTOM_PORT` is set to a valid port (example in `.env.example` is `9465`), `config/metrics.js` starts a **separate HTTP server** that serves custom metrics on:
 
-```
-# Generate Prisma Client
-npm run prisma:generate
+- `GET http://localhost:9465/metrics-custom` (path is controlled by `CUSTOM_METRICS_PATH`)
 
-# Run migrations
-npm run prisma:migrate
+This avoids mixing metrics traffic with your main API and prevents duplicate endpoints.
 
-# Optional: Seed database
-npm run prisma:seed
-```
+#### Option B (fallback): serve custom metrics on the main app port (3000)
+If `METRICS_CUSTOM_PORT` is **not set**, then `app.js` mounts a route (default path `/metrics-custom`) on the main Express app:
 
-### 4. Start Application
+- `GET http://localhost:3000/metrics-custom`
 
-```
-npm start
-```
+#### Summary table
+| What | Default port | Who serves it | URL |
+|---|---:|---|---|
+| Main API + `/health` | 3000 | Express (`app.js`) | `http://localhost:3000/health` |
+| OTel Prometheus exporter metrics | 9464 | OTel exporter (`config/metrics.js`) | `http://localhost:9464/metrics` |
+| Custom prom-client metrics | 9465 (if enabled) | Separate HTTP server (`config/metrics.js`) | `http://localhost:9465/metrics-custom` |
+| Custom prom-client metrics fallback | 3000 (if no 9465) | Express (`app.js`) | `http://localhost:3000/metrics-custom` |
 
----
+## Tracing export (Tempo / OTLP)
 
-## CRUD Operations with curl
+Tracing export is configured by:
+- `OTLP_TRACE_PROTOCOL` = `http` or `grpc`
+- `OTLP_TRACE_DEST_URL` = destination
 
-### Create User
+Defaults in code:
+- protocol: `http`
+- url: `http://localhost:4318/v1/traces`
 
-```
-curl -X POST http://localhost:3000/api/users \
-  -H "Content-Type: application/json" \
-  -d '{"email":"john@example.com","password":"password123","name":"John Doe"}'
-```
+Example `.env.example` switches to gRPC:
+- `OTLP_TRACE_PROTOCOL=grpc`
+- `OTLP_TRACE_DEST_URL=localhost:4317`
 
-### Login
+## Logging
 
-```
-curl -X POST http://localhost:3000/api/auth/login \
-  -H "Content-Type: application/json" \
-  -d '{"email":"john@example.com","password":"password123"}'
-```
+Two logging outputs exist:
+1. Winston application logs (console + file). Winston injects trace/span IDs when a span is active.
+2. OpenTelemetry LogRecords written to `OTEL_LOG_FILE_PATH` (default `./logs/otel.jsonl`) by `config/otel-logs.js`.
 
-### Get All Users
+## Quick start (local)
+### 1) Install
+`npm install`
 
-```
-curl http://localhost:3000/api/users
-```
+### 2) Configure `.env`
+`cp .env.example .env`
 
-### Get User by ID
+At minimum, check:
+- `DATABASE_URL`
+- `JWT_SECRET`
+- `PORT`
+- `METRICS_PORT`
+- `METRICS_CUSTOM_PORT` (optional but recommended)
 
-```
-curl http://localhost:3000/api/users/1
-```
+### 3) Setup database (Prisma)
+`npm run prisma:generate`
+`npm run prisma:migrate`
 
-### Update User
+optional
+`npm run prisma:seed`
 
-```
-curl -X PUT http://localhost:3000/api/users/1 \
-  -H "Content-Type: application/json" \
-  -d '{"name":"John Updated"}'
-```
+### 4) Run
+`npm start`
 
-### Delete User
+## Verification checklist (curl)
 
-```
-curl -X DELETE http://localhost:3000/api/users/1
-```
+Health:
+`curl http://localhost:3000/health`
 
-### Health Check
 
-```
-curl http://localhost:3000/health
-```
+API:
+`curl http://localhost:3000/api/users`
 
----
+OTel exporter metrics:
+`curl http://localhost:9464/metrics`
 
-## Observability Endpoints
+Custom metrics:
+- If `METRICS_CUSTOM_PORT=9465`:
+`curl http://localhost:9465/metrics-custom`
 
-| Endpoint | Purpose | Exemplars | Port |
-|----------|---------|-----------|------|
-| `http://localhost:9464/metrics` | OpenTelemetry auto-instrumented metrics | ❌ No | 9464 |
-| `http://localhost:3000/metrics-custom` | Custom metrics with trace exemplars | ✅ Yes | 3000 |
-| `http://localhost:3000/health` | Health check endpoint | N/A | 3000 |
+- If `METRICS_CUSTOM_PORT` is unset:
+`curl http://localhost:3000/metrics-custom`
 
-**Traces**: Automatically sent to Tempo at configured endpoint (see `.env`)
-
-### Why Two Metrics Endpoints?
-
-We maintain two metrics endpoints because:
-1. **Port 9464** provides comprehensive auto-instrumented metrics from OpenTelemetry
-2. **Port 3000** provides custom metrics with **exemplars** - allowing you to click from a metric spike in Grafana directly to the trace in Tempo
-
-### Prometheus Configuration
-
-Both should be scraped by Prometheus for complete observability.
-
-## Exemplars
-
-**What are exemplars?**
-Exemplars link individual metric data points to their corresponding traces. When you see a latency spike in Grafana, you can click the exemplar to jump directly to the trace that caused it in Tempo.
-
-### 🎯 Key Takeaways on defining exemplars
-1. Only Histograms and Counters support exemplars (not Gauges)
-2. Strategic placement matters - add exemplars where you need debugging (HTTP, DB, errors)
-3. prom-client only - OpenTelemetry metrics can't have exemplars in current version
-4. We only had 2 because that's a minimal viable implementation
-5. You should add more - especially error counter and HTTP request counter
-6. Would you like me to provide the complete updated files with all exemplar-enabled metrics?
-
-### 📊 Summary: Which Metrics Have Exemplars
-
-
-The `/metrics-custom` endpoint provides these metrics with exemplar support (trace links):
-
-- `http_request_duration_seconds_custom` - HTTP request latency histogram
-- `http_requests_total_custom` - Total HTTP requests counter
-- `database_query_duration_seconds_custom` - Database query latency histogram
-- `application_errors_total` - Application errors counter
-
-| Metric Name | Type | Exemplars | Use Case |
-|-------------|------|-----------|----------|
-| `http_request_duration_seconds_custom` | Histogram | ✅ | Link slow requests to traces |
-| `http_requests_total_custom` | Counter | ✅ | Link request spikes to traces |
-| `database_query_duration_seconds_custom` | Histogram | ✅ | Link slow queries to traces |
-| `application_errors_total` | Counter | ✅ | Link errors to failing traces |
-| `active_users_total` | UpDownCounter | ❌ | Current state, no trace link needed |
-| `http_request_duration_seconds` (OTEL) | Histogram | ❌ | OpenTelemetry limitation |
-| `http_requests_total` (OTEL) | Counter | ❌ | OpenTelemetry limitation |
-
-## Architecture
-
-The application follows **MVC architecture** with:
-
-- **Controllers**: Handle HTTP requests/responses
-- **Services**: Business logic layer
-- **Models**: Data structures (Prisma ORM)
-- **Middleware**: Request processing pipeline
-- **Validators**: Input validation schemas (Joi)
-- **Config**: Configuration modules for tracing, logging, metrics, and database
-
-All operations are traced and linked to metrics via exemplars.
-
----
-
-## Project Structure
-
-```
-tracing-app/
-├── src/
-│   ├── config/           # Configuration (tracing, metrics, logging, db)
-│   ├── controllers/      # HTTP request handlers
-│   ├── middleware/       # Express middleware
-│   ├── models/           # Prisma ORM models
-│   ├── routes/           # API route definitions
-│   ├── services/         # Business logic
-│   ├── validators/       # Joi validation schemas
-│   ├── app.js            # Express app setup
-│   └── server.js         # Server entry point
-├── prisma/
-│   ├── schema.prisma     # Database schema
-│   └── seed.js           # Database seeding
-├── .env                  # Environment variables
-├── package.json          # Dependencies
-└── README.md             # This file
-```
-
----
-
-## Additional Documentation
-
-- **[PREREQUISITES.md](./PREREQUISITES.md)** - Installation requirements and setup
-- **[test-scenarios.md](./test-scenarios.md)** - Test scenarios for various use cases
-- **[chaos-testing.md](./chaos-testing.md)** - Chaos engineering examples
-
----
-
-## Tech Stack
-
-- **Node.js** v18+
-- **Express** v4.19+
-- **PostgreSQL** v14+
-- **Prisma ORM** v5.22+
-- **OpenTelemetry** v0.54+
-- **Winston** (logging)
-- **Joi** (validation)
-- **Prometheus** (metrics)
-- **Tempo** (tracing backend)
-
----
+## Docs in this repo
+- `PREREQUISITES.md`: detailed prerequisites + local stack setup
+- `BASIC_TESTS.md`: test scenarios for CRUD/auth/chaos
+- `README_REQ_FLOW.md`: request flow and where tracing/metrics/logging hook in (this file should be plain text Markdown; if it’s binary in your repo, replace it)
 
 ## License
-
 MIT

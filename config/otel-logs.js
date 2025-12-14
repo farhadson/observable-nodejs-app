@@ -123,6 +123,20 @@ class FileLogRecordExporter {
   }
 }
 
+/**
+ * Parse OpenTelemetry resource attributes from an env-style string.
+ *
+ * Expected format is a comma-separated list of `key=value` pairs, e.g.
+ * `deployment.environment=dev,service.namespace=demo`.
+ * Invalid or empty pairs are ignored.
+ *
+ * @param {string | undefined | null} raw - Raw attributes string (usually from OTEL_RESOURCE_ATTRIBUTES).
+ * @returns {Record<string, string>} Parsed attributes as a key/value map.
+ *
+ * @example
+ * parseOtelResourceAttributes('deployment.environment=dev,service.namespace=demo');
+ * // => { 'deployment.environment': 'dev', 'service.namespace': 'demo' }
+ */
 const parseOtelResourceAttributes = (raw) => {
   if (!raw) return {};
   return Object.fromEntries(

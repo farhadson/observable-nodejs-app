@@ -1,220 +1,158 @@
+```json
+  {
+    "title": "Prerequisites & Local Setup Guide",
+    "docType": "PREREQUISITES",
+    "purpose": "Complete requirements list and step-by-step local installation for app + database + observability stack.",
+    "audience": ["developers", "new contributors"],
+    "relatedFiles": [".env.example", "package.json", "prisma/schema.prisma", "config/database.js"],
+    "lastUpdated": "2025-12-14"
+  }
+```
 # Prerequisites and Installation Guide
 
-## Required Software
+This repo is a Node.js (ESM) Express app with Prisma/Postgres plus OpenTelemetry tracing and Prometheus metrics.
 
-### 1. Node.js (v18+ recommended)
+## Required software
 
-**Check version:**
-```
-node --version  # Should be >= 18.0.0
-npm --version   # Should be >= 9.0.0
-```
+### Node.js
+- Node.js 18+ recommended.
+- npm comes with Node.
 
-**Install via nvm (recommended):**
-```
-curl -o- https://raw.githubusercontent.com/nvm-sh/nvm/v0.39.0/install.sh | bash
-nvm install 18
-nvm use 18
+Verify:
+```bash
+node --version
+npm --version
 ```
 
-### 2. PostgreSQL (v14+ recommended)
+### PostgreSQL
+- PostgreSQL 14+ recommended (or use Docker).
+- A database named `tracing_db` is used in the provided `.env.example`.
 
-**Ubuntu/Debian:**
-```
-sudo apt update
-sudo apt install postgresql postgresql-contrib postgresql-client
-```
-
-**macOS:**
-```
-brew install postgresql@14
-brew services start postgresql@14
+Verify:
+```bash
+psql --version
 ```
 
-**Check version:**
-```
-psql --version  # Should be >= 14.0
-```
-### Connect to PostgreSQL as postgres user
-`sudo -u postgres psql`
-
-### Inside psql console, create the database:
-`CREATE DATABASE tracing_db;`
-
-### Verify it was created:
-`\l`
-
-### Exit psql:
-`\q`
-
-
-**Or use Docker:**
-```
-docker run --name postgres \
-  -e POSTGRES_PASSWORD=postgres \
-  -e POSTGRES_DB=tracing_db \
-  -p 5432:5432 \
-  -d postgres:14
-```
-
-### 3. Prisma CLI
-
-Installed automatically via npm (in devDependencies).
-
-**After npm install, verify:**
-```
+### Prisma
+Prisma CLI is installed via `devDependencies`, so after `npm install` it should be available as:
+```bash
 npx prisma --version
 ```
 
-### 4. Tempo (for tracing backend)
+## Optional observability stack
 
-**Create `docker-compose.yml`:**
-```
-version: '3'
-services:
-  tempo:
-    image: grafana/tempo:latest
-    ports:
-      - "4317:4317"  # gRPC
-      - "4318:4318"  # HTTP
-    command: ["-config.file=/etc/tempo.yaml"]
-    volumes:
-      - ./tempo.yaml:/etc/tempo.yaml
-```
+### Tempo (or any OTLP collector/endpoint)
+This app exports traces using OTLP:
+- gRPC: typically on port `4317`
+- HTTP: typically on port `4318` (path often includes `/v1/traces`)
 
-**Create `tempo.yaml`:**
-```
-server:
-  http_listen_port: 3200
+Your `.env` controls:
+- `OTLP_TRACE_PROTOCOL` (`grpc` or `http`)
+- `OTLP_TRACE_DEST_URL` (host/port or full URL depending on protocol)
 
-distributor:
-  receivers:
-    otlp:
-      protocols:
-        grpc:
-          endpoint: 0.0.0.0:4317
-        http:
-          endpoint: 0.0.0.0:4318
+### Prometheus
+Prometheus scrapes metrics endpoints exposed by this app:
+- OpenTelemetry exporter: `http://localhost:9464/metrics` (port controlled by `METRICS_PORT`)
+- Custom prom-client: either `http://localhost:9465/metrics-custom` (if `METRICS_CUSTOM_PORT` is set) or `http://localhost:3000/metrics-custom` (fallback when `METRICS_CUSTOM_PORT` is unset)
 
-storage:
-  trace:
-    backend: local
-    local:
-      path: /tmp/tempo/traces
+## Install and run (local)
 
-metrics_generator:
-  storage:
-    path: /tmp/tempo/generator
+### 1) Install dependencies
+```bash
+npm install
 ```
 
-**Start Tempo:**
-```
-docker-compose up -d
+### 2) Configure environment variables
+```bash
+cp .env.example .env
 ```
 
-### 5. Prometheus (for metrics)
+Minimum set to run locally:
+- `DATABASE_URL`
+- `JWT_SECRET`
+- `PORT` (default 3000)
+- `METRICS_PORT` (default 9464)
+- `METRICS_CUSTOM_PORT` (optional; example uses 9465)
+- `CUSTOM_METRICS_PATH` (default `/metrics-custom`)
 
-**Create `prometheus.yml`:**
+Notes on DB auth:
+- Prefer a real local password or Docker Postgres credentials.
+- Avoid using “trust” authentication in Postgres except in isolated dev environments where you accept the risk.
+
+### 3) Prepare the database (Prisma)
+```bash
+npm run prisma:generate
+npm run prisma:migrate
+# optional
+npm run prisma:seed
 ```
+
+### 4) Start the app
+```bash
+npm start
+```
+
+## What should be listening (ports)
+
+### Main app (Express): `PORT` (default 3000)
+- Health: `GET /health`
+- API routes: `/api/auth/*`, `/api/users/*`, `/api/chaos/*`
+
+### OpenTelemetry Prometheus exporter: `METRICS_PORT` (default 9464)
+- Metrics: `GET /metrics`
+
+### Custom metrics (prom-client): `METRICS_CUSTOM_PORT` (optional, example 9465)
+- Metrics: `GET {CUSTOM_METRICS_PATH}` (default `/metrics-custom`)
+- If `METRICS_CUSTOM_PORT` is NOT set, then `/metrics-custom` is served by Express on the main app port (3000).
+
+## Quick verification commands
+
+### Health
+```bash
+curl http://localhost:3000/health
+```
+
+### OpenTelemetry metrics (9464)
+```bash
+curl http://localhost:9464/metrics
+```
+
+### Custom metrics (9465 or 3000 fallback)
+If `METRICS_CUSTOM_PORT=9465`:
+```bash
+curl http://localhost:9465/metrics-custom
+```
+
+If `METRICS_CUSTOM_PORT` is unset:
+```bash
+curl http://localhost:3000/metrics-custom
+```
+
+## Prometheus scrape config example
+
+```yaml
 global:
   scrape_interval: 15s
 
 scrape_configs:
-  - job_name: 'node-app'
+  - job_name: "node-app-otel"
     static_configs:
-      - targets: ['localhost:9464']
-  
-  - job_name: 'node-app-custom'
+      - targets: ["localhost:9464"]
+
+  - job_name: "node-app-custom"
     static_configs:
-      - targets: ['localhost:3000']
-    metrics_path: '/metrics-custom'
+      - targets: ["localhost:9465"]
+    metrics_path: "/metrics-custom"
 ```
 
-**Run Prometheus:**
-```
-docker run -p 9090:9090 \
-  -v $(pwd)/prometheus.yml:/etc/prometheus/prometheus.yml \
-  prom/prometheus
-```
+If you use the fallback (custom metrics on 3000), change the second target to `localhost:3000`.
 
----
+## Troubleshooting
 
-## Installation Steps
+### “/metrics-custom returns 404”
+- If `METRICS_CUSTOM_PORT` is set, the custom metrics server is on that port (example 9465), and the Express route on 3000 is intentionally not mounted.
 
-### 1. Clone and Install Dependencies
-
-```
-npm install
-```
-
-### 2. Setup Database
-
-```
-# Create .env file
-cp .env.example .env
-
-# Edit DATABASE_URL in .env
-# Format: postgresql://USER:PASSWORD@HOST:PORT/DATABASE
-
-# Generate Prisma Client
-npm run prisma:generate
-
-# Run migrations (creates tables)
-npm run prisma:migrate
-npx prisma migrate dev --name init
-
-# Seed database (optional)
-npm run prisma:seed
-```
-
-### 3. Start Application
-
-```
-# Development
-npm run dev
-
-# Production
-npm start
-```
-
-### 4. Verify Installation
-
-```
-# Check health
-curl http://localhost:3000/health
-
-# Check OpenTelemetry metrics
-curl http://localhost:9464/metrics
-
-# Check custom metrics with exemplars
-curl http://localhost:3000/metrics-custom
-```
-
----
-
-## Package Versions Used
-
-- **Node.js**: v18+ (LTS)
-- **PostgreSQL**: v14+
-- **Prisma**: v5.22.0
-- **Express**: v4.19.2
-- **OpenTelemetry SDK**: v0.54.0
-- **Winston**: v3.14.2
-- **Joi**: v17.13.3
-
----
-
-## Optional Tools
-
-- **Prisma Studio**: GUI for database
-  ```
-  npm run prisma:studio
-  ```
-- **k6**: Load testing
-  ```
-  brew install k6
-  ```
-- **curl**: API testing (pre-installed on most systems)
-- **Docker**: For running Tempo/Prometheus
-```
-
+### “Tracing works but no logs exported”
+- Winston logs always go to console + file.
+- OpenTelemetry LogRecords are written to `OTEL_LOG_FILE_PATH` (default `./logs/otel.jsonl`) when the logs pipeline is enabled.
+- Network export for OTel logs is disabled via `OTEL_LOGS_EXPORTER=none` in the example env.

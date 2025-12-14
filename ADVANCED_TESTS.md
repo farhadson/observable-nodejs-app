@@ -44,14 +44,14 @@
 - At what point does my server crash?
 
 **Example:**
-```bash
+```
 # Send 1000 requests with 50 concurrent users
 ab -n 1000 -c 50 http://localhost:3000/api/users
 ```
 
 **Analogy:** 
 - Regular day: 10 cars on a bridge ✅
-- Pressure test: 10,000 cars on the bridge 🚗🚗🚗
+- Pressure test: 10,000 cars on the bridge
 - Question: Does the bridge collapse?
 
 ***
@@ -66,20 +66,23 @@ ab -n 1000 -c 50 http://localhost:3000/api/users
 - What happens if memory is full?
 - Does my app crash or recover gracefully?
 
-**Example:**
-```bash
-# Simulate database failure
-curl -X POST http://localhost:3000/api/chaos/database-error
+**Example (UPDATED to match your chaos endpoints):**
+```
+# Simulate database failure (explicit error type)
+curl -X POST http://localhost:3000/api/chaos/database-error \
+  -H "Content-Type: application/json" \
+  -d '{"errorType":"CONNECTIONERROR"}'
 
-# Simulate slow network (500ms delay)
+# Simulate slow dependency (500ms delay) - latency endpoint expects:
+# { service, duration, enabled }
 curl -X POST http://localhost:3000/api/chaos/latency \
   -H "Content-Type: application/json" \
-  -d '{"enabled":true,"delayMs":500}'
+  -d '{"service":"database","enabled":true,"duration":500}'
 ```
 
 **Analogy:**
 - Regular day: Bridge works fine ✅
-- Chaos test: What if a cable snaps? 💥
+- Chaos test: What if a cable snaps?
 - Question: Does the bridge collapse or stay up with 1 cable missing?
 
 ***
@@ -100,44 +103,25 @@ curl -X POST http://localhost:3000/api/chaos/latency \
 
 ## 🧪 **YOUR CHAOS ENGINEERING SETUP**
 
-I see you already have **chaos routes** in your codebase! Let's explore them [file:d7c30d5f-af83-4e40-b065-9c5968dcb46a].
+You already have **chaos routes** in your codebase.
 
 ### **What Chaos Testing Scenarios You Can Do:**
 
-Looking at your `chaosController.js`:
+Looking at your `chaosController.js` routes:
 
-1. **Latency Injection** - Simulate slow network
-2. **Random Failures** - Random 500 errors
+1. **Latency Injection** - Simulate slowness
+2. **Random Failures** - Random failures via probability
 3. **Memory Leak** - Simulate memory problems
 4. **CPU Spike** - Simulate high CPU usage
-5. **Database Error** - Simulate database down
-6. **Circuit Breaker** - Test failover mechanisms
-
-***
-
-## 🎯 **COMPLETE TEST SUITE FOR YOUR APP**
-
-Let me provide a comprehensive testing guide:
-
-***
-
-## 📝 **1. FUNCTIONAL TESTS (What You Already Did) ✅**
-
-Your current tests cover:
-- ✅ CRUD operations
-- ✅ Validation errors
-- ✅ Authentication
-- ✅ 404 errors
-- ✅ Duplicate handling
-
-**Grade: Excellent!** You've covered the basics well.
+5. **Database Error** - Simulate DB errors
+6. **Circuit Breaker** - Test repeated failures pattern
 
 ***
 
 ## 💪 **2. PRESSURE TESTING (NEW)**
 
 ### **Install Apache Bench:**
-```bash
+```
 # Ubuntu/Debian
 sudo apt-get install apache2-utils
 
@@ -149,21 +133,14 @@ brew install wrk
 ```
 
 ### **Test 1: API Endpoint Load Test**
-
-```bash
+```
 # Test: How many requests can /health handle?
 ab -n 1000 -c 50 http://localhost:3000/health
-
-# Expected output:
-# Requests per second: 500-2000 (depends on your hardware)
-# Time per request: 1-10ms
-# Failed requests: 0
 ```
 
 ### **Test 2: Database Load Test**
-
-```bash
-# Test: How many concurrent user creations can database handle?
+```
+# Test: concurrent user creations
 ab -n 100 -c 10 \
   -p user.json \
   -T application/json \
@@ -171,19 +148,18 @@ ab -n 100 -c 10 \
 ```
 
 Create `user.json`:
-```json
+```
 {"email":"loadtest@example.com","password":"test123","name":"Load Test"}
 ```
 
 ### **Test 3: Complex Flow Load Test**
-
-```bash
+```
 # Using wrk with Lua script
 wrk -t4 -c50 -d30s --script=load-test.lua http://localhost:3000
 ```
 
 Create `load-test.lua`:
-```lua
+```
 -- Generate random users
 counter = 0
 
@@ -199,52 +175,41 @@ end
 
 ## 💥 **3. CHAOS TESTING (NEW - Using Your Built-in Chaos Routes)**
 
-Your app has chaos engineering built-in! Here's how to use it:
-
 ### **Chaos Test 1: Latency Injection**
 
 **Simulate slow network/database:**
-
-```bash
-# Enable 500ms latency on all requests
+```
+# Enable 500ms latency for database operations
 curl -X POST http://localhost:3000/api/chaos/latency \
   -H "Content-Type: application/json" \
-  -d '{"enabled":true,"delayMs":500}'
+  -d '{"service":"database","enabled":true,"duration":500}'
 
 # Now test normal operations (should be slow)
 time curl http://localhost:3000/api/users
-# Should take ~500ms
-
-# Test: Does your app still work when slow?
-curl -X POST http://localhost:3000/api/users \
-  -H "Content-Type: application/json" \
-  -d '{"email":"slow@example.com","password":"test123","name":"Slow User"}'
 
 # Disable latency
 curl -X POST http://localhost:3000/api/chaos/latency \
   -H "Content-Type: application/json" \
-  -d '{"enabled":false}'
+  -d '{"service":"database","enabled":false,"duration":0}'
 ```
 
 **What to check:**
 - ✅ Does app still work (just slower)?
 - ✅ Do traces show the delay?
-- ✅ Do logs show it took 500ms?
-- ❌ Does app crash? (It shouldn't!)
+- ✅ Do logs show the slowdown?
 
 ***
 
 ### **Chaos Test 2: Random Failures**
 
 **Simulate random 50% failure rate:**
-
-```bash
-# Enable 50% chance of 500 Internal Server Error
+```
+# Enable 50% failure probability for database operations
 curl -X POST http://localhost:3000/api/chaos/random-failure \
   -H "Content-Type: application/json" \
-  -d '{"enabled":true,"failureRate":0.5}'
+  -d '{"service":"database","enabled":true,"probability":0.5}'
 
-# Try multiple requests - half should fail
+# Try multiple requests - some should fail
 for i in {1..10}; do
   echo "Request $i:"
   curl -X GET http://localhost:3000/api/users
@@ -254,30 +219,24 @@ done
 # Disable random failures
 curl -X POST http://localhost:3000/api/chaos/random-failure \
   -H "Content-Type: application/json" \
-  -d '{"enabled":false}'
+  -d '{"service":"database","enabled":false,"probability":0}'
 ```
 
 **What to check:**
 - ✅ Does your error handling work?
 - ✅ Are errors logged correctly?
 - ✅ Do traces show the error?
-- ❌ Does one error crash the whole app? (It shouldn't!)
 
 ***
 
 ### **Chaos Test 3: Memory Leak Simulation**
 
 **Simulate memory leak:**
-
-```bash
-# Trigger memory leak
+```
+# Trigger memory leak for 30 seconds (or set your own duration)
 curl -X POST http://localhost:3000/api/chaos/memory-leak \
   -H "Content-Type: application/json" \
-  -d '{"size":100}'
-
-# Monitor memory usage
-# In another terminal:
-watch -n 1 'ps aux | grep node'
+  -d '{"duration":30000}'
 
 # Check health endpoint
 curl http://localhost:3000/health
@@ -286,15 +245,13 @@ curl http://localhost:3000/health
 **What to check:**
 - ✅ Does memory increase?
 - ✅ Does app eventually crash?
-- ✅ Can you detect the leak via metrics?
+- ✅ Can you detect the impact via metrics?
 
 ***
 
 ### **Chaos Test 4: CPU Spike Simulation**
 
-**Simulate CPU overload:**
-
-```bash
+```
 # Trigger CPU spike for 5 seconds
 curl -X POST http://localhost:3000/api/chaos/cpu-spike \
   -H "Content-Type: application/json" \
@@ -304,60 +261,38 @@ curl -X POST http://localhost:3000/api/chaos/cpu-spike \
 time curl http://localhost:3000/api/users
 ```
 
-**What to check:**
-- ✅ Is app still responsive during CPU spike?
-- ✅ Do requests timeout?
-- ✅ Do metrics show CPU spike?
-
 ***
 
 ### **Chaos Test 5: Database Error Simulation**
 
-**Simulate database connection failure:**
-
-```bash
-# Trigger database error
-curl -X POST http://localhost:3000/api/chaos/database-error
-
-# Try database operations (should fail gracefully)
-curl -X POST http://localhost:3000/api/users \
-  -H "Content-Type: application/json" \
-  -d '{"email":"test@example.com","password":"test123","name":"Test"}'
 ```
-
-**What to check:**
-- ✅ Does app return 500 error (not crash)?
-- ✅ Is error message clear?
-- ✅ Is error logged and traced?
+# Trigger database error (pick one: CONNECTIONERROR, TIMEOUT, DEADLOCK, CONSTRAINTVIOLATION)
+curl -X POST http://localhost:3000/api/chaos/database-error \
+  -H "Content-Type: application/json" \
+  -d '{"errorType":"TIMEOUT"}'
+```
 
 ***
 
 ### **Chaos Test 6: Circuit Breaker Test**
 
-```bash
-# Test circuit breaker pattern
+```
 curl -X POST http://localhost:3000/api/chaos/circuit-breaker-test
 ```
-
-**What to check:**
-- ✅ Does circuit open after failures?
-- ✅ Does it recover after timeout?
 
 ***
 
 ### **Chaos Test 7: Combined Chaos**
 
-**Enable multiple chaos scenarios at once:**
-
-```bash
-# Enable latency + random failures
+```
+# Enable latency + random failures (database)
 curl -X POST http://localhost:3000/api/chaos/latency \
   -H "Content-Type: application/json" \
-  -d '{"enabled":true,"delayMs":1000}'
+  -d '{"service":"database","enabled":true,"duration":1000}'
 
 curl -X POST http://localhost:3000/api/chaos/random-failure \
   -H "Content-Type: application/json" \
-  -d '{"enabled":true,"failureRate":0.3}'
+  -d '{"service":"database","enabled":true,"probability":0.3}'
 
 # Try normal operations
 for i in {1..20}; do
@@ -370,129 +305,225 @@ done
 curl -X POST http://localhost:3000/api/chaos/disable-all
 ```
 
+### **Chaos Test 7: Combined Chaos**
+
+```bash
+# Enable latency + random failures (database)
+curl -X POST http://localhost:3000/api/chaos/latency \
+  -H "Content-Type: application/json" \
+  -d '{"service":"database","enabled":true,"duration":1000}'
+
+curl -X POST http://localhost:3000/api/chaos/random-failure \
+  -H "Content-Type: application/json" \
+  -d '{"service":"database","enabled":true,"probability":0.3}'
+
+# Try normal operations
+for i in {1..20}; do
+  echo "Request $i:"
+  curl -s -o /dev/null -w "Status: %{http_code}, Time: %{time_total}s\n" \
+    http://localhost:3000/api/users
+done
+
+# Disable all chaos
+curl -X POST http://localhost:3000/api/chaos/disable-all
+```
+## 🧩 **Understanding Error Codes (Prisma vs PostgreSQL)**
+
+When using Prisma ORM, low-level database errors can surface as either:
+- PostgreSQL error codes (e.g., `23505`), or
+- Prisma-wrapped error codes (e.g., `P2002`), depending on where/how the error is thrown/handled.
+
+| Error Type | PostgreSQL Code | Prisma Code | Handler Location (in this app) |
+|------------|-----------------|-------------|---------------------------------|
+| Unique constraint violation | `23505` | `P2002` | `userController.js` |
+| Foreign key violation | `23503` | `P2003` | N/A in this app |
+| Not null violation | `23502` | `P2011` | N/A in this app |
+| Record not found | N/A | `P2025` | `userService.js` |
+
+### **8) Example Test: Unique constraint (duplicate email)**
+
+Create user:
+```bash
+curl -i -X POST http://localhost:3000/api/users \
+  -H "Content-Type: application/json" \
+  -d '{"email":"test@example.com","password":"test123","name":"Test"}'
+```
+
+Try duplicate (should return 409):
+```bash
+curl -i -X POST http://localhost:3000/api/users \
+  -H "Content-Type: application/json" \
+  -d '{"email":"test@example.com","password":"test123","name":"Test2"}'
+```
+
+What to check:
+- Response status is 409 (conflict) on the second request.
+- Logs/traces show a handled error path (not a crash).
+
 ***
 
-## 🎯 **COMPLETE CHAOS TEST SCRIPT**
+## 🧨 **Chaos Testing Scenarios (Infra-level)**
 
-Create `chaos-tests.sh`:
+These are “real dependency failure” tests, different from the built-in chaos routes (which simulate failures inside the app).
+
+### **9) Database connection failure (real Postgres down)**
+
+Stop PostgreSQL to simulate connection failure:
 
 ```bash
-#!/bin/bash
+# Option 1: systemd (Linux)
+sudo systemctl stop postgresql
 
-echo "🔥 Starting Chaos Engineering Tests..."
-echo ""
-
-BASE_URL="http://localhost:3000"
-
-# Helper function
-test_scenario() {
-  echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
-  echo "📍 $1"
-  echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
-}
-
-cleanup() {
-  echo "🧹 Cleaning up chaos..."
-  curl -s -X POST $BASE_URL/api/chaos/disable-all
-  echo "✅ Cleanup complete"
-}
-
-# Trap to ensure cleanup runs
-trap cleanup EXIT
-
-# Test 1: Baseline (No Chaos)
-test_scenario "Test 1: Baseline Performance"
-for i in {1..5}; do
-  curl -s -o /dev/null -w "Request $i: %{http_code} in %{time_total}s\n" $BASE_URL/health
-done
-sleep 2
-
-# Test 2: Latency Injection
-test_scenario "Test 2: Latency Injection (500ms delay)"
-curl -s -X POST $BASE_URL/api/chaos/latency \
-  -H "Content-Type: application/json" \
-  -d '{"enabled":true,"delayMs":500}'
-
-for i in {1..5}; do
-  curl -s -o /dev/null -w "Request $i: %{http_code} in %{time_total}s\n" $BASE_URL/health
-done
-
-curl -s -X POST $BASE_URL/api/chaos/latency \
-  -H "Content-Type: application/json" \
-  -d '{"enabled":false}'
-sleep 2
-
-# Test 3: Random Failures
-test_scenario "Test 3: Random Failures (50% failure rate)"
-curl -s -X POST $BASE_URL/api/chaos/random-failure \
-  -H "Content-Type: application/json" \
-  -d '{"enabled":true,"failureRate":0.5}'
-
-success=0
-failures=0
-for i in {1..10}; do
-  status=$(curl -s -o /dev/null -w "%{http_code}" $BASE_URL/api/users)
-  if [ "$status" = "200" ]; then
-    ((success++))
-    echo "Request $i: ✅ Success ($status)"
-  else
-    ((failures++))
-    echo "Request $i: ❌ Failed ($status)"
-  fi
-done
-echo "Success rate: $success/10, Failure rate: $failures/10"
-
-curl -s -X POST $BASE_URL/api/chaos/random-failure \
-  -H "Content-Type: application/json" \
-  -d '{"enabled":false}'
-sleep 2
-
-# Test 4: CPU Spike
-test_scenario "Test 4: CPU Spike (5 seconds)"
-echo "Triggering CPU spike..."
-curl -s -X POST $BASE_URL/api/chaos/cpu-spike \
-  -H "Content-Type: application/json" \
-  -d '{"duration":5000}' &
-
-sleep 1
-echo "Testing responsiveness during CPU spike..."
-time curl -s $BASE_URL/health > /dev/null
-sleep 5
-
-# Test 5: Database Error
-test_scenario "Test 5: Database Error Simulation"
-curl -s -X POST $BASE_URL/api/chaos/database-error
-
-echo "Attempting database operation (should fail gracefully)..."
-response=$(curl -s -w "\nHTTP Status: %{http_code}" \
-  -X POST $BASE_URL/api/users \
-  -H "Content-Type: application/json" \
-  -d '{"email":"chaos@example.com","password":"test123","name":"Chaos"}')
-echo "$response"
-sleep 2
-
-# Test 6: Combined Chaos
-test_scenario "Test 6: Combined Chaos (Latency + Failures)"
-curl -s -X POST $BASE_URL/api/chaos/latency \
-  -H "Content-Type: application/json" \
-  -d '{"enabled":true,"delayMs":1000}'
-
-curl -s -X POST $BASE_URL/api/chaos/random-failure \
-  -H "Content-Type: application/json" \
-  -d '{"enabled":true,"failureRate":0.3}'
-
-echo "Testing with combined chaos..."
-for i in {1..5}; do
-  curl -s -o /dev/null -w "Request $i: %{http_code} in %{time_total}s\n" $BASE_URL/health
-done
-
-echo ""
-echo "🏁 Chaos Engineering Tests Complete!"
-echo "Check Grafana for trace visualization and metrics"
+# Option 2: Docker
+docker stop postgres-container
 ```
 
-**Run it:**
+Try operations (should fail gracefully and show connection errors in traces/logs):
+
 ```bash
-chmod +x chaos-tests.sh
-./chaos-tests.sh
+curl -i http://localhost:3000/api/users
+
+curl -i -X POST http://localhost:3000/api/users \
+  -H "Content-Type: application/json" \
+  -d '{"email":"dbdown@example.com","password":"test123","name":"DB Down"}'
 ```
+
+Restart database:
+
+```bash
+sudo systemctl start postgresql
+# or: docker start postgres-container
+```
+
+What to check:
+- App returns an error response (500/503 depending on your handling) but stays up.
+- Errors are visible in traces and in the application error metric.
+
+***
+
+## 🐌 **Slow Database Queries (via built-in chaos)**
+
+### **10) Inject DB latency (5 seconds)**
+
+```bash
+curl -i -X POST http://localhost:3000/api/chaos/latency \
+  -H "Content-Type: application/json" \
+  -d '{"service":"database","duration":5000,"enabled":true}'
+```
+
+Now make requests (will show slow traces):
+
+```bash
+curl -i http://localhost:3000/api/users
+```
+
+Disable latency:
+
+```bash
+curl -i -X POST http://localhost:3000/api/chaos/latency \
+  -H "Content-Type: application/json" \
+  -d '{"service":"database","duration":0,"enabled":false}'
+```
+
+***
+
+## 🎲 **Random Failures (via built-in chaos)**
+
+### **11) Random failures (50% chance)**
+
+```bash
+curl -i -X POST http://localhost:3000/api/chaos/random-failure \
+  -H "Content-Type: application/json" \
+  -d '{"service":"database","probability":0.5,"enabled":true}'
+```
+
+Make multiple requests to see mixed success/failure traces:
+
+```bash
+for i in {1..20}; do
+  echo "Attempt $i"
+  curl -s -o /dev/null -w "Status: %{http_code}, Time: %{time_total}s\n" \
+    http://localhost:3000/api/users
+  sleep 1
+done
+```
+
+Disable failures:
+
+```bash
+curl -i -X POST http://localhost:3000/api/chaos/random-failure \
+  -H "Content-Type: application/json" \
+  -d '{"service":"database","probability":0,"enabled":false}'
+```
+
+***
+
+## 🧠 **Memory / CPU Pressure (via built-in chaos)**
+
+### **12) Memory pressure (memory leak simulation)**
+
+```bash
+curl -i -X POST http://localhost:3000/api/chaos/memory-leak \
+  -H "Content-Type: application/json" \
+  -d '{"duration":30000}'
+```
+
+### **CPU spike simulation**
+
+```bash
+curl -i -X POST http://localhost:3000/api/chaos/cpu-spike \
+  -H "Content-Type: application/json" \
+  -d '{"duration":5000}'
+```
+
+What to check:
+- Increased latency during CPU spike.
+- Memory growth during the leak window (use container metrics / `top`).
+
+***
+
+## 🔁 **Circuit Breaker Testing (built-in endpoint)**
+
+### **13) Circuit breaker test**
+
+```bash
+curl -i -X POST http://localhost:3000/api/chaos/circuit-breaker-test
+```
+
+What to check:
+- Multiple failures are generated in one run.
+- Traces show repeated error spans.
+
+***
+
+## 📈 **Load Testing with k6**
+
+Create `load-test.js`:
+
+```js
+import http from 'k6/http';
+import { check, sleep } from 'k6';
+
+export const options = {
+  stages: [
+    { duration: '30s', target: 20 },
+    { duration: '1m', target: 50 },
+    { duration: '30s', target: 0 },
+  ],
+};
+
+export default function () {
+  const users = http.get('http://localhost:3000/api/users');
+  check(users, { 'status is 200': (r) => r.status === 200 });
+  sleep(1);
+}
+```
+
+Run with:
+
+```bash
+k6 run load-test.js
+```
+
+Tip:
+- Run k6 once with chaos disabled (baseline), then re-run while DB latency or random failures are enabled to see resilience under load.
