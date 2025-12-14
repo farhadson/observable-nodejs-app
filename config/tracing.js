@@ -147,9 +147,66 @@ const sdk = new NodeSDK({
   resource,
   traceExporter,
   instrumentations: [
-    getNodeAutoInstrumentations({
+    ...getNodeAutoInstrumentations({
       '@opentelemetry/instrumentation-fs': { enabled: false }, // Disable fs instrumentation to reduce noise
-      '@opentelemetry/instrumentation-grpc': { enabled: false }, // Only affects whether this application’s own gRPC client/server calls get auto-instrumented
+      '@opentelemetry/instrumentation-grpc': { enabled: false }, // Only affects whether this application’s own gRPC client/server calls get auto-instrumented      
+
+      // ✅ HTTP client instrumentation - adds peer.service for outbound calls
+      '@opentelemetry/instrumentation-http': {
+        // Enrich client (outgoing) spans with remote service identifier
+        requestHook: (span, request) => {
+          // peer.service is the key attribute for service-graph edges
+          if (span.kind === 1) { // SpanKind.CLIENT = 1
+            const hostname = request.hostname || request.host || 'unknown';
+            span.setAttribute('peer.service', hostname);
+            
+            // Also set net.peer.name for better observability
+            span.setAttribute('net.peer.name', hostname);
+            if (request.port) {
+              span.setAttribute('net.peer.port', request.port);
+            }
+          }
+        },
+      
+        // Server spans: add http.route (low-cardinality route template)
+        // This is critical for span metrics aggregation
+        responseHook: (span, response) => {
+          // Response hook can access final status
+          // (Auto-instrumentation already sets most attributes)
+        },
+        
+        // Ignore health checks to reduce noise
+        ignoreIncomingRequestHook: (request) => {
+          return request.url === '/health';
+        },
+      },
+
+      // ✅ Express instrumentation - span name = METHOD + route
+      '@opentelemetry/instrumentation-express': {
+        spanNameHook: (info, defaultName) => {
+          // Only rename the span for the actual request handler layer
+          // (that’s where a route template exists)
+          if (info?.layerType !== 'request_handler') return defaultName;
+
+          const method = info?.request?.method || 'HTTP';
+          // Prefer info.route (provided by Express instrumentation) over req.route
+          const route = info?.route
+            ? `${info?.request?.baseUrl || ''}${info.route}`
+            : null;
+
+          return route ? `${method} ${route}` : defaultName;
+        },
+
+        requestHook: (span, info) => {
+          if (info?.layerType !== 'request_handler') return;
+
+          const route = info?.route
+            ? `${info?.request?.baseUrl || ''}${info.route}`
+            : null;
+
+          if (route) span.setAttribute('http.route', route);
+        },
+      },
     }),
   ],
 });

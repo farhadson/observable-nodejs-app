@@ -27,8 +27,9 @@ const traceContextMiddleware = (req, res, next) => {
   
   if (span) {
     const spanContext = span.spanContext();
+    req.rootSpan = span;
     req.traceId = spanContext.traceId;
-    req.spanId = spanContext.spanId;
+    req.spanId = spanContext.spanId;  
     
     // Add trace ID to response headers for client tracking
     res.setHeader('X-Trace-Id', spanContext.traceId);

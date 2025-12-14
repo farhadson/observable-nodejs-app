@@ -65,7 +65,11 @@ app.use((req, res, next) => {
       
       // Clean up route (remove query string)
       route = route.split('?')[0];
-      
+            
+      if (req.rootSpan && route && typeof req.rootSpan.updateName === 'function') {
+        req.rootSpan.updateName(`${req.method} ${route}`);
+      }
+
       // Record metrics
       if (typeof duration === 'number' && !isNaN(duration) && duration >= 0 &&
           typeof res.statusCode === 'number' && !isNaN(res.statusCode)) {
