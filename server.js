@@ -29,8 +29,19 @@ const PORT = process.env.PORT || 3000;
 const server = app.listen(PORT, () => {
   logger.info(`Server started on port ${PORT}`);
   logger.info(`Health check: http://localhost:${PORT}/health`);
-  logger.info(`Custom metrics: http://localhost:${PORT}/metrics-custom`);
+  // logger.info(`Custom metrics: http://localhost:${PORT}/metrics-custom`);
+  // logger.info(`OpenTelemetry metrics: http://localhost:${process.env.METRICS_PORT || 9464}/metrics`);
+  const customMetricsPath = process.env.CUSTOM_METRICS_PATH || '/metrics-custom';
+  const metricsCustomPort = process.env.METRICS_CUSTOM_PORT;
+
+  if (metricsCustomPort) {
+    logger.info(`Custom metrics: http://localhost:${metricsCustomPort}${customMetricsPath}`);
+  } else {
+    logger.info(`Custom metrics: http://localhost:${PORT}${customMetricsPath}`);
+  }
+
   logger.info(`OpenTelemetry metrics: http://localhost:${process.env.METRICS_PORT || 9464}/metrics`);
+
 });
 
 /**

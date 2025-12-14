@@ -98,20 +98,24 @@ app.get('/health', (req, res) => {
 });
 
 /**
- * Custom Prometheus metrics endpoint with exemplars
- * @name GET /metrics-custom
- * @function
- * @returns {string} Prometheus metrics in text format
+ * Custom Prometheus metrics endpoint (legacy fallback).
+ *
+ * If METRICS_CUSTOM_PORT is set, the custom metrics server is started from config/metrics.js
+ * and we should NOT expose this route on the main app port to avoid duplicates.
  */
-app.get('/metrics-custom', async (req, res) => {
-  try {
-    res.set('Content-Type', promRegister.contentType);
-    const metrics = await promRegister.metrics();
-    res.end(metrics);
-  } catch (error) {
-    res.status(500).end(error);
-  }
-});
+if (!process.env.METRICS_CUSTOM_PORT) {
+  const customMetricsPath = process.env.CUSTOM_METRICS_PATH || '/metrics-custom';
+
+  app.get(customMetricsPath, async (req, res) => {
+    try {
+      res.set('Content-Type', promRegister.contentType);
+      const metrics = await promRegister.metrics();
+      res.end(metrics);
+    } catch (error) {
+      res.status(500).end(error);
+    }
+  });
+}
 
 /**
  * Mount API routes

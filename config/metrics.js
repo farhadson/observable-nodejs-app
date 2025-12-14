@@ -13,6 +13,7 @@ import { Resource } from '@opentelemetry/resources';
 import { ATTR_SERVICE_NAME, ATTR_SERVICE_VERSION } from '@opentelemetry/semantic-conventions';
 import client from 'prom-client';
 import dotenv from 'dotenv';
+import http from 'node:http';
 
 dotenv.config();
 
@@ -142,14 +143,43 @@ const activeUsers = meter.createUpDownCounter('active_users_total', {
 const promRegister = new client.Registry();
 
 // Enable OpenMetrics format (supports exemplars but we're not using them yet)
-// promRegister.setContentType(client.Registry.OPENMETRICS_CONTENT_TYPE);
+promRegister.setContentType(client.Registry.OPENMETRICS_CONTENT_TYPE);
 
 // Use standard Prometheus text format (displays in browser)
 // Note: OpenMetrics format (OPENMETRICS_CONTENT_TYPE) is needed for exemplars,
 // but causes browsers to download instead of display. We'll use standard format for now.
 
 // Use standard Prometheus text format (displays in browser)
-promRegister.setContentType(client.Registry.PROMETHEUS_CONTENT_TYPE);
+// promRegister.setContentType(client.Registry.PROMETHEUS_CONTENT_TYPE);
+
+const METRICS_CUSTOM_PORT = parseInt(process.env.METRICS_CUSTOM_PORT || '', 10);
+const CUSTOM_METRICS_PATH = process.env.CUSTOM_METRICS_PATH || '/metrics-custom'
+
+if (Number.isFinite(METRICS_CUSTOM_PORT) && METRICS_CUSTOM_PORT > 0) {
+  const customMetricsServer = http.createServer(async (req, res) => {
+    try {
+      const url = new URL(req.url || '/', `http://${req.headers.host || 'localhost'}`);
+
+      if (req.method !== 'GET' || url.pathname !== CUSTOM_METRICS_PATH) {
+        res.statusCode = 404;
+        res.end('Not Found');
+        return;
+      }
+
+      res.setHeader('Content-Type', promRegister.contentType);
+      const metricsText = await promRegister.metrics();
+      res.statusCode = 200;
+      res.end(metricsText);
+    } catch (err) {
+      res.statusCode = 500;
+      res.end('Error generating metrics');
+    }
+  });
+
+  customMetricsServer.listen(METRICS_CUSTOM_PORT, () => {
+    console.log(`Custom metrics available at http://localhost:${METRICS_CUSTOM_PORT}${CUSTOM_METRICS_PATH}`);
+  });
+}
 
 /**
  * HTTP request duration histogram (custom)
@@ -161,12 +191,13 @@ promRegister.setContentType(client.Registry.PROMETHEUS_CONTENT_TYPE);
  * // Recorded automatically by recordHttpRequest()
  * // Prometheus query: histogram_quantile(0.95, http_request_duration_seconds_custom)
  */
-const httpDurationHistogram = new client.Histogram({
+const httpDurationHistogramCustom = new client.Histogram({
   name: 'http_request_duration_seconds_custom',
   help: 'Duration of HTTP requests in seconds',
   labelNames: ['method', 'route', 'status_code'],
   buckets: [0.001, 0.01, 0.1, 0.5, 1, 2, 5],
   registers: [promRegister],
+  enableExemplars: true
 });
 
 /**
@@ -184,6 +215,7 @@ const httpRequestCounterCustom = new client.Counter({
   help: 'Total number of HTTP requests',
   labelNames: ['method', 'route', 'status_code'],
   registers: [promRegister],
+  enableExemplars: true
 });
 
 /**
@@ -196,12 +228,13 @@ const httpRequestCounterCustom = new client.Counter({
  * // Recorded by recordDatabaseQuery()
  * // Prometheus query: histogram_quantile(0.99, database_query_duration_seconds_custom)
  */
-const dbQueryHistogram = new client.Histogram({
+const dbQueryHistogramCustom = new client.Histogram({
   name: 'database_query_duration_seconds_custom',
   help: 'Duration of database queries',
   labelNames: ['operation', 'table'],
   buckets: [0.001, 0.01, 0.05, 0.1, 0.5, 1],
   registers: [promRegister],
+  enableExemplars: true
 });
 
 /**
@@ -214,14 +247,22 @@ const dbQueryHistogram = new client.Histogram({
  * // Recorded by recordError()
  * // Prometheus query: sum(rate(application_errors_total[5m])) by (error_type)
  */
-const errorCounter = new client.Counter({
+const errorCounterCustom = new client.Counter({
   name: 'application_errors_total',
   help: 'Total number of application errors',
   labelNames: ['error_type', 'route'],
   registers: [promRegister],
+  enableExemplars: true
 });
 
 // ============ RECORDING FUNCTIONS ============
+
+const getExemplarLabels = () => {
+  const span = trace.getSpan(context.active());
+  if (!span) return undefined;
+  const sc = span.spanContext();
+  return { traceId: sc.traceId, spanId: sc.spanId };
+};
 
 /**
  * Record HTTP request metrics
@@ -275,9 +316,19 @@ const recordHttpRequest = (method, route, statusCode, duration) => {
     };
     
     // Simple recording without exemplars (stable and working)
-    httpDurationHistogram.observe(labels, duration);
-    httpRequestCounterCustom.inc(labels, 1);
-    
+    // httpDurationHistogramCustom.observe(labels, duration);
+    // httpRequestCounterCustom.inc(labels, 1);
+
+    const exemplarLabels = getExemplarLabels();
+    // httpDurationHistogramCustom.observe({ labels, value: duration, exemplarLabels });
+    // httpRequestCounterCustom.inc({ labels, value: 1, exemplarLabels });        
+    if (exemplarLabels) {
+      httpDurationHistogramCustom.observe({ labels, value: duration, exemplarLabels });
+      httpRequestCounterCustom.inc({ labels, value: 1, exemplarLabels });
+    } else {
+      httpDurationHistogramCustom.observe(labels, duration);
+      httpRequestCounterCustom.inc(labels, 1);
+    }
   } catch (error) {
     console.error('❌ Error recording prom-client metrics:', {
       error: error.message,
@@ -316,7 +367,16 @@ const recordDatabaseQuery = (operation, table, duration) => {
 
   // prom-client metric
   try {
-    dbQueryHistogram.observe({ operation, table }, duration);
+    // dbQueryHistogramCustom.observe({ operation, table }, duration);
+    const exemplarLabels = getExemplarLabels();
+    // dbQueryHistogramCustom.observe({ labels: { operation, table }, value: duration, exemplarLabels });      
+    const labels = { operation, table };
+
+    if (exemplarLabels) {
+      dbQueryHistogramCustom.observe({ labels, value: duration, exemplarLabels });
+    } else {
+      dbQueryHistogramCustom.observe(labels, duration);
+    }
   } catch (error) {
     console.error('❌ Error recording prom-client database metric:', error.message);
   }
@@ -340,7 +400,15 @@ const recordDatabaseQuery = (operation, table, duration) => {
  */
 const recordError = (errorType, route) => {
   try {
-    errorCounter.inc({ error_type: errorType, route }, 1);
+    // errorCounterCustom.inc({ error_type: errorType, route }, 1);
+    const exemplarLabels = getExemplarLabels();
+    // errorCounterCustom.inc({ labels: { error_type: errorType, route }, value: 1, exemplarLabels });
+    const labels = { error_type: errorType, route };
+    if (exemplarLabels) {
+      errorCounterCustom.inc({ labels, value: 1, exemplarLabels });
+    } else {
+      errorCounterCustom.inc(labels, 1);
+    }
   } catch (error) {
     console.error('❌ Error recording error metric:', error.message);
   }
