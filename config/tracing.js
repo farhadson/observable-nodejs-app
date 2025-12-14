@@ -13,6 +13,7 @@ import { Resource } from '@opentelemetry/resources';
 import { ATTR_SERVICE_NAME, ATTR_SERVICE_VERSION } from '@opentelemetry/semantic-conventions';
 import { getNodeAutoInstrumentations } from '@opentelemetry/auto-instrumentations-node';
 import dotenv from 'dotenv';
+import fs from 'node:fs';
 
 dotenv.config();
 
@@ -51,11 +52,25 @@ if (protocol === 'grpc') {
   const isTls = normalized.protocol === 'https:';
   const defaultGrpcPort = process.env.OTLP_TRACE_GRPC_PORT || '4317';
 
+  // CA override for TLS (self-signed / private CA)
+  let rootCert;
+  const caPath = process.env.OTEL_EXPORTER_OTLP_TRACES_CERTIFICATE;
+  if (isTls && caPath) {
+    try {
+      rootCert = fs.readFileSync(caPath);
+      console.log(`Loaded OTLP gRPC root CA from ${caPath}`);
+    } catch (err) {
+      console.error(`Failed to read OTLP gRPC CA file at ${caPath}:`, err.message);
+    }
+  }
+
   traceExporter = new OTLPTraceExporterGRPC({
-    // exporter expects host:port (no path); this is the common working form [web:8]    
+    // exporter expects host:port (no path); this is the common working form
     url: `${normalized.hostname}:${normalized.port || defaultGrpcPort}`,
-    // If your Tempo endpoint is behind TLS, you must use createSsl() [web:8]
-    credentials: isTls ? grpc.credentials.createSsl() : grpc.credentials.createInsecure(),
+    // If your Tempo endpoint is behind TLS, you must use createSsl()
+    credentials: isTls 
+      ? grpc.credentials.createSsl(rootCert) // use provided CA if present
+      : grpc.credentials.createInsecure(),
   });
 } else {
   console.log('Using HTTP exporter for traces (HTTP/1.1)');
