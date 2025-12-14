@@ -5,10 +5,13 @@
  */
 
 // ✅ Import tracing FIRST (before anything else)
-import './config/tracing.js';
+await import('./config/tracing.js');
+await import('./config/otel-logs.js').then(m => m.initOtelLogs());
 
-import app from './app.js';
-import logger from './config/logging.js';
+const { default: app } = await import('./app.js');
+const { default: logger } = await import('./config/logging.js');
+// import app from './app.js';
+// import logger from './config/logging.js';
 import dotenv from 'dotenv';
 
 dotenv.config();

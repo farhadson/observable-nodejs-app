@@ -19,6 +19,20 @@ dotenv.config();
 // ============ OPENTELEMETRY METRICS (Port 9464) ============
 // These are auto-exported but DON'T support exemplars
 
+// helper: parse OTEL_RESOURCE_ATTRIBUTES like "key1=val1,key2=val2"
+const parseOtelResourceAttributes = (raw) => {
+  if (!raw) return {};
+  return Object.fromEntries(
+    raw
+      .split(',')
+      .map((pair) => {
+        const [k, ...rest] = pair.split('=');
+        return [k?.trim(), rest.join('=').trim()];
+      })
+      .filter(([k, v]) => k && v)
+  );
+};
+
 /**
  * OpenTelemetry Resource with service metadata
  * Provides service name and version for metric identification
@@ -26,9 +40,18 @@ dotenv.config();
  * @constant
  */
 const resource = new Resource({
-  [ATTR_SERVICE_NAME]: process.env.SERVICE_NAME || 'tracing-app',
-  [ATTR_SERVICE_VERSION]: process.env.SERVICE_VERSION || '1.0.0',
+  ...parseOtelResourceAttributes(process.env.OTEL_RESOURCE_ATTRIBUTES),
+  [ATTR_SERVICE_NAME]:
+    process.env.OTEL_SERVICE_NAME ||
+    process.env.SERVICE_NAME ||
+    'tracing-app',
+  [ATTR_SERVICE_VERSION]:
+    process.env.OTEL_SERVICE_VERSION ||
+    process.env.SERVICE_VERSION ||
+    '1.0.0',
 });
+
+
 
 /**
  * Prometheus Exporter for OpenTelemetry metrics

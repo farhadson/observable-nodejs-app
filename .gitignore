@@ -47,3 +47,5 @@ temp/
 # Optional: Ignore Prisma generated files if team regenerates locally
 # node_modules/.prisma/
 # node_modules/@prisma/
+
+digest.txt
