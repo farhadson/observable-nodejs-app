@@ -12,6 +12,15 @@ import { OTLPTraceExporter as OTLPTraceExporterGRPC } from '@opentelemetry/expor
 import { Resource } from '@opentelemetry/resources';
 import { ATTR_SERVICE_NAME, ATTR_SERVICE_VERSION } from '@opentelemetry/semantic-conventions';
 import { getNodeAutoInstrumentations } from '@opentelemetry/auto-instrumentations-node';
+
+// import { PrismaInstrumentation } from '@prisma/instrumentation';
+
+// import { createRequire } from 'node:module';
+// const require = createRequire(import.meta.url);
+// const { PrismaInstrumentation } = require('@prisma/instrumentation');
+import pkg from '@prisma/instrumentation';
+const { PrismaInstrumentation } = pkg;
+
 import dotenv from 'dotenv';
 import fs from 'node:fs';
 
@@ -208,6 +217,7 @@ const sdk = new NodeSDK({
         },
       },
     }),
+    new PrismaInstrumentation({ middleware: true }),
   ],
 });
 

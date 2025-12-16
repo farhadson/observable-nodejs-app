@@ -1,6 +1,7 @@
 // Prisma ORM schema definition
 generator client {
   provider = "prisma-client-js"
+  previewFeatures = ["tracing"]
   // ES6+ Feature: This generates TypeScript types for database models
 }
 
