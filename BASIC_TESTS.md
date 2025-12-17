@@ -49,7 +49,6 @@ for i in {1..10}; do
     -H "Content-Type: application/json" \
     -d "{\"email\":\"user$i@example.com\",\"password\":\"test123\",\"name\":\"User $i\"}" &
 done
-wait
 ```
 
 ---
