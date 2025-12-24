@@ -1,0 +1,14 @@
+# Categorized metrics:
+## Target / resource attributes
+- metric {name: "target_info", type: "gauge", labels: "deployment_environment, instance, job, service_name, service_namespace, service_version, telemetry_sdk_language, telemetry_sdk_name, telemetry_sdk_version"}
+
+## HTTP request metrics
+- metric {name: "http_request_duration_seconds", type: "histogram", labels: "instance, job, method, route, status_code, le"}
+- metric {name: "http_requests_total", type: "counter", labels: "instance, job, method, route, status_code"}
+
+## Scrape / Prometheus metrics:
+- metric {name: "up", type: "gauge", labels: "instance, job"}
+- metric {name: "scrape_duration_seconds", type: "gauge", labels: "instance, job"}
+- metric {name: "scrape_samples_scraped", type: "gauge", labels: "instance, job"}
+- metric {name: "scrape_samples_post_metric_relabeling", type: "gauge", labels: "instance, job"}
+- metric {name: "scrape_series_added", type: "gauge", labels: "instance, job"}

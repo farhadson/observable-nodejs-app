@@ -1,0 +1,12 @@
+# Categorized metrics:
+## HTTP request metrics
+- metric {name: "http_request_duration_seconds_custom", type: "histogram", labels: "instance, job, method, route, status_code, le"}
+- metric {name: "http_requests_total_custom_total", type: "counter", labels: "instance, job, method, route, status_code"}
+
+## Scrape/target metrics
+- metric {name: "up", type: "gauge", labels: "instance, job"}
+- metric {name: "scrape_duration_seconds", type: "gauge", labels: "instance, job"}
+- metric {name: "scrape_samples_scraped", type: "gauge", labels: "instance, job"}
+- metric {name: "scrape_samples_post_metric_relabeling", type: "gauge", labels: "instance, job"}
+- metric {name: "scrape_series_added", type: "gauge", labels: "instance, job"}
+​

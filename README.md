@@ -154,5 +154,74 @@ Custom metrics:
 - `BASIC_TESTS.md`: test scenarios for CRUD/auth/chaos
 - `README_REQ_FLOW.md`: request flow and where tracing/metrics/logging hook in (this file should be plain text Markdown; if it’s binary in your repo, replace it)
 
+
+### general architecture map
+
+```mermaid
+flowchart LR
+    %% Styles
+    classDef nodejs fill:#d4e157,stroke:#33691e,stroke-width:2px;
+    classDef db fill:#cfd8dc,stroke:#455a64,stroke-width:2px,shape:cylinder;
+    classDef infra fill:#b3e5fc,stroke:#0277bd,stroke-width:2px;
+    classDef file fill:#ffecb3,stroke:#ff6f00,stroke-width:2px,shape:note;
+
+    subgraph Host ["App Host / Container"]
+        subgraph NodeJS_App ["Node.js Express App (tracing-app)"]
+            Auth[Auth Controller]
+            Users[User Controller]
+            Prisma[Prisma Client]
+            
+            subgraph Middleware
+                TraceMW[TraceContext MW]
+                MetricMW[Metrics MW]
+                ErrMW[Error Handler]
+            end
+            
+            Winston[Winston Logger]
+            
+            subgraph Exporters
+                OTelExp[OTel Metrics Exp]
+                CustomExp[Custom Prom Client]
+                OTelTrace[OTel Trace Exp]
+            end
+        end
+
+        LogFile["./logs/app.log"]:::file
+        JsonLog["./logs/otel.jsonl"]:::file
+        FluentBit[Fluent Bit]
+    end
+
+    subgraph Data_Stores ["Infrastructure"]
+        Postgres[("PostgreSQL :5432")]:::db
+        Tempo["Tempo :4317/4318"]:::infra
+        Prometheus["Prometheus :9090"]:::infra
+        Fluentd[Fluentd]:::infra
+    end
+
+    %% Internal App Flow
+    Auth & Users --> Prisma
+    TraceMW --> OTelTrace
+    MetricMW --> CustomExp
+    Winston --> LogFile
+    
+    %% External Connections
+    Prisma -- "Query (Port 5432)" --> Postgres
+    
+    %% Observability Outputs
+    OTelTrace -- "Push Traces (gRPC/HTTP)" --> Tempo
+    OTelExp -- "Expose Metrics (:9464)" --> Prometheus
+    CustomExp -- "Expose Metrics (:9465)" --> Prometheus
+    
+    LogFile -- Tail --> FluentBit
+    FluentBit -- Forward --> Fluentd
+
+    %% Tempo to Prom connection
+    Tempo -.->|"Span Metrics/RED"| Prometheus
+
+    %% Annotations
+    class NodeJS_App nodejs;
+    class Postgres db;
+```
+
 ## License
 MIT

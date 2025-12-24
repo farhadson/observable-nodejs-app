@@ -74,8 +74,11 @@
       "pluginVersion": "11.5.2",
       "targets": [
         {
+          "editorMode": "code",
+          "exemplar": true,
           "expr": "sum(rate(traces_spanmetrics_calls_total{service=~\"$service\"}[$__rate_interval]))",
           "legendFormat": "rps",
+          "range": true,
           "refId": "A"
         }
       ],
@@ -140,8 +143,11 @@
       "pluginVersion": "11.5.2",
       "targets": [
         {
+          "editorMode": "code",
+          "exemplar": true,
           "expr": "100 * (sum(rate(traces_spanmetrics_calls_total{service=~\"$service\", status_code=\"STATUS_CODE_ERROR\"}[$__rate_interval])) / clamp_min(sum(rate(traces_spanmetrics_calls_total{service=~\"$service\"}[$__rate_interval])), 0.000001))",
           "legendFormat": "error%",
+          "range": true,
           "refId": "A"
         }
       ],
@@ -204,8 +210,11 @@
       "pluginVersion": "11.5.2",
       "targets": [
         {
+          "editorMode": "code",
+          "exemplar": true,
           "expr": "histogram_quantile(0.95, sum(rate(traces_spanmetrics_latency_bucket{service=~\"$service\"}[$__rate_interval])) by (le))",
           "legendFormat": "p95",
+          "range": true,
           "refId": "A"
         }
       ],
@@ -374,8 +383,11 @@
       "pluginVersion": "11.5.2",
       "targets": [
         {
+          "editorMode": "code",
+          "exemplar": true,
           "expr": "topk(10, sum(rate(traces_spanmetrics_calls_total{service=~\"$service\"}[$__rate_interval])) by (span_name))",
           "legendFormat": "{{span_name}}",
+          "range": true,
           "refId": "A"
         }
       ],
@@ -466,8 +478,11 @@
       "pluginVersion": "11.5.2",
       "targets": [
         {
+          "editorMode": "code",
+          "exemplar": true,
           "expr": "topk(10, histogram_quantile(0.95, sum(rate(traces_spanmetrics_latency_bucket{service=~\"$service\"}[$__rate_interval])) by (le, span_name)))",
           "legendFormat": "{{span_name}}",
+          "range": true,
           "refId": "A"
         }
       ],
@@ -540,6 +555,7 @@
       "targets": [
         {
           "editorMode": "code",
+          "exemplar": true,
           "expr": "sum(rate(traces_spanmetrics_latency_bucket[$__rate_interval])) by (le)",
           "hide": false,
           "legendFormat": "{{le}}",
@@ -583,10 +599,6 @@
               {
                 "color": "green",
                 "value": null
-              },
-              {
-                "color": "red",
-                "value": 80
               }
             ]
           }
@@ -602,9 +614,8 @@
                 "id": "links",
                 "value": [
                   {
-                    "targetBlank": false,
-                    "title": "Set traceId",
-                    "url": "/d/${__dashboard.uid}/${__dashboard.uid}?var-traceId=${__value.raw}"
+                    "title": "Select Trace ID",
+                    "url": "/d/dyn_tempo_traces_spanmetrics/dynamic-tempo-traces-2b-span-service-metrics?orgId=24&from=${__from}&to=${__to}&timezone=browser&var-ds_tempo=${ds_tempo}&var-ds_prom=${ds_prom}&var-service=$__all&var-client=$__all&var-server=$__all&var-traceql=%7Btrue%7D&refresh=30s&var-traceId=${__value.raw}\n"
                   }
                 ]
               }
@@ -847,8 +858,11 @@
       "pluginVersion": "11.5.2",
       "targets": [
         {
-          "expr": "sort_desc(sum(rate(traces_service_graph_request_total{client=~\"$client\", server=~\"$server\"}[$__rate_interval])) by (client, server))",
+          "editorMode": "code",
+          "expr": "sort_desc(sum(rate(traces_service_graph_request_total{client=~\"$client\", server=~\"$server\",service_namespace=\"demo\"}[$__rate_interval])) by (client, server))",
           "format": "table",
+          "hide": false,
+          "range": true,
           "refId": "A"
         }
       ],
@@ -939,8 +953,10 @@
       "pluginVersion": "11.5.2",
       "targets": [
         {
-          "expr": "histogram_quantile(0.95, sum(rate(traces_service_graph_request_client_seconds_bucket{client=~\"$client\", server=~\"$server\"}[$__rate_interval])) by (le, client, server))",
+          "editorMode": "code",
+          "expr": "histogram_quantile(0.95, sum(rate(traces_service_graph_request_client_seconds_bucket{client=~\"$client\", server=~\"$server\",service_namespace=\"demo\"}[$__rate_interval])) by (le, client, server))",
           "legendFormat": "{{client}} → {{server}}",
+          "range": true,
           "refId": "A"
         }
       ],
@@ -977,8 +993,9 @@
           },
           "editorMode": "code",
           "exemplar": false,
-          "expr": "label_join(label_join(label_join(sum(increase(traces_service_graph_request_total{server=~\"$server\", client=~\"$client\"}[5m])) by (server, client) > 0 or sum(increase(traces_service_graph_request_total{server=~\"$server\", client=~\"$client\"}[5m])) by (server, client) > 0, \"source\", \"\", \"client\"), \"target\", \"\", \"server\"), \"id\", \"-\", \"server\", \"client\")",
+          "expr": "label_join(\n  label_join(\n    label_join(\n      sum(increase(traces_service_graph_request_total{service_namespace=\"demo\", server=~\"$server\", client=~\"$client\"}[5m])) by (server, client) > 0\n      or\n      sum(increase(traces_service_graph_request_total{service_namespace=\"demo\", server=~\"$server\", client=~\"$client\"}[5m])) by (server, client) > 0,\n      \"source\", \"\", \"client\"\n    ),\n    \"target\", \"\", \"server\"\n  ),\n  \"id\", \"-\", \"server\", \"client\"\n)",
           "format": "table",
+          "hide": false,
           "instant": true,
           "legendFormat": "",
           "range": false,
@@ -1076,6 +1093,7 @@
             "uid": "${ds_prom}"
           },
           "editorMode": "code",
+          "exemplar": true,
           "expr": "sum(rate(traces_spanmetrics_latency_sum{service=~\"$service\"}[$__rate_interval]))\n/\nsum(rate(traces_spanmetrics_latency_count{service=~\"$service\"}[$__rate_interval]))",
           "instant": false,
           "legendFormat": "avg latency",
@@ -1174,6 +1192,7 @@
             "uid": "${ds_prom}"
           },
           "editorMode": "code",
+          "exemplar": true,
           "expr": "topk(\n  10,\n  histogram_quantile(\n    0.99,\n    sum(rate(traces_spanmetrics_latency_bucket{service=~\"$service\"}[$__rate_interval])) by (le, span_name)\n  )\n)",
           "instant": false,
           "legendFormat": "__auto",
@@ -1272,6 +1291,7 @@
             "uid": "${ds_prom}"
           },
           "editorMode": "code",
+          "exemplar": true,
           "expr": "sum(rate(traces_spanmetrics_size_total{service=~\"$service\"}[$__rate_interval]))\n/\nsum(rate(traces_spanmetrics_calls_total{service=~\"$service\"}[$__rate_interval]))",
           "hide": false,
           "instant": false,
@@ -1408,26 +1428,26 @@
       },
       {
         "current": {
-          "text": "a0271bdb10a4e80f8a7c3275cb60a2a3",
-          "value": "a0271bdb10a4e80f8a7c3275cb60a2a3"
+          "text": "b6063338958660f1804b6147f1f3d1c8",
+          "value": "b6063338958660f1804b6147f1f3d1c8"
         },
         "label": "Trace ID",
         "name": "traceId",
         "options": [
           {
             "selected": true,
-            "text": "a0271bdb10a4e80f8a7c3275cb60a2a3",
-            "value": "a0271bdb10a4e80f8a7c3275cb60a2a3"
+            "text": "b6063338958660f1804b6147f1f3d1c8",
+            "value": "b6063338958660f1804b6147f1f3d1c8"
           }
         ],
-        "query": "a0271bdb10a4e80f8a7c3275cb60a2a3",
+        "query": "b6063338958660f1804b6147f1f3d1c8",
         "type": "textbox"
       }
     ]
   },
   "time": {
-    "from": "2025-12-16T10:08:00.000Z",
-    "to": "2025-12-16T10:12:00.000Z"
+    "from": "2025-12-24T11:56:00.000Z",
+    "to": "2025-12-24T11:58:00.000Z"
   },
   "timepicker": {
     "refresh_intervals": [
@@ -1442,6 +1462,6 @@
   "timezone": "browser",
   "title": "Dynamic Tempo Traces + Span/Service Metrics",
   "uid": "dyn_tempo_traces_spanmetrics",
-  "version": 7,
+  "version": 11,
   "weekStart": ""
 }
