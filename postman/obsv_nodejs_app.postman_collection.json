@@ -1,0 +1,634 @@
+{
+    "info": {
+      "name": "BASIC_TESTS API (Jest parity)",
+      "description": "Collection covering BASIC_TESTS.md scenarios: health, users flow, batch create, CRUD, validation, duplicates, not-found, wrong endpoints, auth failures.",
+      "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
+    },
+    "variable": [
+      { "key": "baseUrl", "value": "http://localhost:3000" },
+      { "key": "flowEmail", "value": "" },
+      { "key": "flowPassword", "value": "test123" },
+      { "key": "flowName", "value": "Alice" },
+      { "key": "flowUserId", "value": "" },
+      { "key": "crudEmail", "value": "" },
+      { "key": "crudPassword", "value": "test123" },
+      { "key": "crudName", "value": "Before Update" },
+      { "key": "crudUserId", "value": "" },
+      { "key": "dupEmail", "value": "" },
+      { "key": "token", "value": "" }
+    ],
+    "item": [
+      {
+        "name": "Health",
+        "item": [
+          {
+            "name": "GET /health",
+            "request": {
+              "method": "GET",
+              "header": [],
+              "url": {
+                "raw": "{{baseUrl}}/health",
+                "host": ["{{baseUrl}}"],
+                "path": ["health"]
+              }
+            },
+            "event": [
+              {
+                "listen": "test",
+                "script": {
+                  "type": "text/javascript",
+                  "exec": [
+                    "pm.test('Status is 200', function () {",
+                    "  pm.expect(pm.response.code).to.equal(200);",
+                    "});"
+                  ]
+                }
+              }
+            ]
+          }
+        ]
+      },
+      {
+        "name": "Scenario 1 - Registration flow",
+        "item": [
+          {
+            "name": "1) Create user (flow)",
+            "event": [
+              {
+                "listen": "prerequest",
+                "script": {
+                  "type": "text/javascript",
+                  "exec": [
+                    "// Create a unique email once per run for the flow user",
+                    "if (!pm.collectionVariables.get('flowEmail')) {",
+                    "  const uuid = pm.variables.replaceIn('{{$randomUUID}}');",
+                    "  pm.collectionVariables.set('flowEmail', `alice-${uuid}@example.com`);",
+                    "}"
+                  ]
+                }
+              },
+              {
+                "listen": "test",
+                "script": {
+                  "type": "text/javascript",
+                  "exec": [
+                    "pm.test('Status is 200/201', function () {",
+                    "  pm.expect(pm.response.code).to.be.oneOf([200, 201]);",
+                    "});",
+                    "",
+                    "let j = {};",
+                    "try { j = pm.response.json(); } catch (e) {}",
+                    "",
+                    "const id = j?.id ?? j?.data?.id ?? j?.user?.id ?? j?.data?.user?.id;",
+                    "if (id) pm.collectionVariables.set('flowUserId', String(id));",
+                    "",
+                    "pm.test('flowUserId was captured (adjust parsing if your API differs)', function () {",
+                    "  pm.expect(pm.collectionVariables.get('flowUserId')).to.not.be.empty;",
+                    "});"
+                  ]
+                }
+              }
+            ],
+            "request": {
+              "method": "POST",
+              "header": [{ "key": "Content-Type", "value": "application/json" }],
+              "body": {
+                "mode": "raw",
+                "raw": "{\n  \"email\": \"{{flowEmail}}\",\n  \"password\": \"{{flowPassword}}\",\n  \"name\": \"{{flowName}}\"\n}"
+              },
+              "url": {
+                "raw": "{{baseUrl}}/api/users",
+                "host": ["{{baseUrl}}"],
+                "path": ["api", "users"]
+              }
+            }
+          },
+          {
+            "name": "1) Login (flow user)",
+            "event": [
+              {
+                "listen": "test",
+                "script": {
+                  "type": "text/javascript",
+                  "exec": [
+                    "pm.test('Status is 200', function () {",
+                    "  pm.expect(pm.response.code).to.equal(200);",
+                    "});",
+                    "",
+                    "let j = {};",
+                    "try { j = pm.response.json(); } catch (e) {}",
+                    "",
+                    "const token = j?.token ?? j?.data?.token;",
+                    "if (token) pm.collectionVariables.set('token', token);",
+                    "",
+                    "pm.test('Token captured (adjust parsing if your API differs)', function () {",
+                    "  pm.expect(pm.collectionVariables.get('token')).to.not.be.empty;",
+                    "});"
+                  ]
+                }
+              }
+            ],
+            "request": {
+              "method": "POST",
+              "header": [{ "key": "Content-Type", "value": "application/json" }],
+              "body": {
+                "mode": "raw",
+                "raw": "{\n  \"email\": \"{{flowEmail}}\",\n  \"password\": \"{{flowPassword}}\"\n}"
+              },
+              "url": {
+                "raw": "{{baseUrl}}/api/auth/login",
+                "host": ["{{baseUrl}}"],
+                "path": ["api", "auth", "login"]
+              }
+            }
+          },
+          {
+            "name": "1) Get user details (flow user)",
+            "event": [
+              {
+                "listen": "test",
+                "script": {
+                  "type": "text/javascript",
+                  "exec": [
+                    "pm.test('Status is 200', function () {",
+                    "  pm.expect(pm.response.code).to.equal(200);",
+                    "});"
+                  ]
+                }
+              }
+            ],
+            "request": {
+              "method": "GET",
+              "header": [],
+              "url": {
+                "raw": "{{baseUrl}}/api/users/{{flowUserId}}",
+                "host": ["{{baseUrl}}"],
+                "path": ["api", "users", "{{flowUserId}}"]
+              }
+            }
+          }
+        ]
+      },
+      {
+        "name": "Scenario 2 - Batch create",
+        "item": [
+          {
+            "name": "2) Create 10 users concurrently (pm.sendRequest)",
+            "event": [
+              {
+                "listen": "test",
+                "script": {
+                  "type": "text/javascript",
+                  "exec": [
+                    "// Postman Runner itself is sequential; this uses pm.sendRequest to fire 10 POSTs quickly.",
+                    "const baseUrl = pm.collectionVariables.get('baseUrl');",
+                    "const makeUser = (i) => ({",
+                    "  email: `user${i}-` + pm.variables.replaceIn('{{$randomUUID}}') + '@example.com',",
+                    "  password: 'test123',",
+                    "  name: `User ${i}`",
+                    "});",
+                    "",
+                    "let completed = 0;",
+                    "let ok = 0;",
+                    "",
+                    "for (let i = 1; i <= 10; i++) {",
+                    "  const u = makeUser(i);",
+                    "  pm.sendRequest({",
+                    "    url: baseUrl + '/api/users',",
+                    "    method: 'POST',",
+                    "    header: { 'Content-Type': 'application/json' },",
+                    "    body: { mode: 'raw', raw: JSON.stringify(u) }",
+                    "  }, function (err, res) {",
+                    "    completed++;",
+                    "    if (!err && [200, 201].includes(res.code)) ok++;",
+                    "    if (completed === 10) {",
+                    "      pm.collectionVariables.set('batchOk', String(ok));",
+                    "    }",
+                    "  });",
+                    "}",
+                    "",
+                    "pm.test('Fired 10 create-user requests (check Console and batchOk later)', function () {",
+                    "  pm.expect(true).to.equal(true);",
+                    "});"
+                  ]
+                }
+              }
+            ],
+            "request": {
+              "method": "GET",
+              "header": [],
+              "url": {
+                "raw": "{{baseUrl}}/health",
+                "host": ["{{baseUrl}}"],
+                "path": ["health"]
+              }
+            }
+          }
+        ]
+      },
+      {
+        "name": "Scenario 3 - Users CRUD flow",
+        "item": [
+          {
+            "name": "3) Get all users",
+            "event": [
+              {
+                "listen": "test",
+                "script": {
+                  "type": "text/javascript",
+                  "exec": [
+                    "pm.test('Status is 200', function () {",
+                    "  pm.expect(pm.response.code).to.equal(200);",
+                    "});"
+                  ]
+                }
+              }
+            ],
+            "request": {
+              "method": "GET",
+              "header": [],
+              "url": {
+                "raw": "{{baseUrl}}/api/users",
+                "host": ["{{baseUrl}}"],
+                "path": ["api", "users"]
+              }
+            }
+          },
+          {
+            "name": "3) Create user (CRUD)",
+            "event": [
+              {
+                "listen": "prerequest",
+                "script": {
+                  "type": "text/javascript",
+                  "exec": [
+                    "if (!pm.collectionVariables.get('crudEmail')) {",
+                    "  const uuid = pm.variables.replaceIn('{{$randomUUID}}');",
+                    "  pm.collectionVariables.set('crudEmail', `crud-${uuid}@example.com`);",
+                    "}"
+                  ]
+                }
+              },
+              {
+                "listen": "test",
+                "script": {
+                  "type": "text/javascript",
+                  "exec": [
+                    "pm.test('Status is 200/201', function () {",
+                    "  pm.expect(pm.response.code).to.be.oneOf([200, 201]);",
+                    "});",
+                    "let j = {};",
+                    "try { j = pm.response.json(); } catch (e) {}",
+                    "const id = j?.id ?? j?.data?.id ?? j?.user?.id ?? j?.data?.user?.id;",
+                    "if (id) pm.collectionVariables.set('crudUserId', String(id));",
+                    "pm.test('crudUserId captured', function () {",
+                    "  pm.expect(pm.collectionVariables.get('crudUserId')).to.not.be.empty;",
+                    "});"
+                  ]
+                }
+              }
+            ],
+            "request": {
+              "method": "POST",
+              "header": [{ "key": "Content-Type", "value": "application/json" }],
+              "body": {
+                "mode": "raw",
+                "raw": "{\n  \"email\": \"{{crudEmail}}\",\n  \"password\": \"{{crudPassword}}\",\n  \"name\": \"{{crudName}}\"\n}"
+              },
+              "url": {
+                "raw": "{{baseUrl}}/api/users",
+                "host": ["{{baseUrl}}"],
+                "path": ["api", "users"]
+              }
+            }
+          },
+          {
+            "name": "3) Update user (CRUD)",
+            "event": [
+              {
+                "listen": "test",
+                "script": {
+                  "type": "text/javascript",
+                  "exec": [
+                    "pm.test('Status is 200/204', function () {",
+                    "  pm.expect(pm.response.code).to.be.oneOf([200, 204]);",
+                    "});"
+                  ]
+                }
+              }
+            ],
+            "request": {
+              "method": "PUT",
+              "header": [{ "key": "Content-Type", "value": "application/json" }],
+              "body": { "mode": "raw", "raw": "{\n  \"name\": \"Updated Name\"\n}" },
+              "url": {
+                "raw": "{{baseUrl}}/api/users/{{crudUserId}}",
+                "host": ["{{baseUrl}}"],
+                "path": ["api", "users", "{{crudUserId}}"]
+              }
+            }
+          },
+          {
+            "name": "3) Delete user (CRUD)",
+            "event": [
+              {
+                "listen": "test",
+                "script": {
+                  "type": "text/javascript",
+                  "exec": [
+                    "pm.test('Status is 200/202/204', function () {",
+                    "  pm.expect(pm.response.code).to.be.oneOf([200, 202, 204]);",
+                    "});"
+                  ]
+                }
+              }
+            ],
+            "request": {
+              "method": "DELETE",
+              "header": [],
+              "url": {
+                "raw": "{{baseUrl}}/api/users/{{crudUserId}}",
+                "host": ["{{baseUrl}}"],
+                "path": ["api", "users", "{{crudUserId}}"]
+              }
+            }
+          }
+        ]
+      },
+      {
+        "name": "Scenario 4 - Validation errors",
+        "item": [
+          {
+            "name": "4) Create user - invalid email format",
+            "event": [
+              {
+                "listen": "test",
+                "script": {
+                  "type": "text/javascript",
+                  "exec": [
+                    "pm.test('Status is 400 or 422', function () {",
+                    "  pm.expect(pm.response.code).to.be.oneOf([400, 422]);",
+                    "});"
+                  ]
+                }
+              }
+            ],
+            "request": {
+              "method": "POST",
+              "header": [{ "key": "Content-Type", "value": "application/json" }],
+              "body": {
+                "mode": "raw",
+                "raw": "{\n  \"email\": \"invalid-email\",\n  \"password\": \"test\",\n  \"name\": \"Test\"\n}"
+              },
+              "url": {
+                "raw": "{{baseUrl}}/api/users",
+                "host": ["{{baseUrl}}"],
+                "path": ["api", "users"]
+              }
+            }
+          },
+          {
+            "name": "4) Create user - missing required fields",
+            "event": [
+              {
+                "listen": "test",
+                "script": {
+                  "type": "text/javascript",
+                  "exec": [
+                    "pm.test('Status is 400 or 422', function () {",
+                    "  pm.expect(pm.response.code).to.be.oneOf([400, 422]);",
+                    "});"
+                  ]
+                }
+              }
+            ],
+            "request": {
+              "method": "POST",
+              "header": [{ "key": "Content-Type", "value": "application/json" }],
+              "body": { "mode": "raw", "raw": "{\n  \"email\": \"test@example.com\"\n}" },
+              "url": {
+                "raw": "{{baseUrl}}/api/users",
+                "host": ["{{baseUrl}}"],
+                "path": ["api", "users"]
+              }
+            }
+          },
+          {
+            "name": "4) Create user - password too short",
+            "event": [
+              {
+                "listen": "test",
+                "script": {
+                  "type": "text/javascript",
+                  "exec": [
+                    "pm.test('Status is 400 or 422', function () {",
+                    "  pm.expect(pm.response.code).to.be.oneOf([400, 422]);",
+                    "});"
+                  ]
+                }
+              }
+            ],
+            "request": {
+              "method": "POST",
+              "header": [{ "key": "Content-Type", "value": "application/json" }],
+              "body": {
+                "mode": "raw",
+                "raw": "{\n  \"email\": \"test@example.com\",\n  \"password\": \"123\",\n  \"name\": \"Test\"\n}"
+              },
+              "url": {
+                "raw": "{{baseUrl}}/api/users",
+                "host": ["{{baseUrl}}"],
+                "path": ["api", "users"]
+              }
+            }
+          }
+        ]
+      },
+      {
+        "name": "Scenario 5 - Duplicate email",
+        "item": [
+          {
+            "name": "5) Create user (first) with dupEmail",
+            "event": [
+              {
+                "listen": "prerequest",
+                "script": {
+                  "type": "text/javascript",
+                  "exec": [
+                    "const uuid = pm.variables.replaceIn('{{$randomUUID}}');",
+                    "pm.collectionVariables.set('dupEmail', `duplicate-${uuid}@example.com`);"
+                  ]
+                }
+              },
+              {
+                "listen": "test",
+                "script": {
+                  "type": "text/javascript",
+                  "exec": [
+                    "pm.test('Status is 200/201', function () {",
+                    "  pm.expect(pm.response.code).to.be.oneOf([200, 201]);",
+                    "});"
+                  ]
+                }
+              }
+            ],
+            "request": {
+              "method": "POST",
+              "header": [{ "key": "Content-Type", "value": "application/json" }],
+              "body": {
+                "mode": "raw",
+                "raw": "{\n  \"email\": \"{{dupEmail}}\",\n  \"password\": \"test123\",\n  \"name\": \"First\"\n}"
+              },
+              "url": {
+                "raw": "{{baseUrl}}/api/users",
+                "host": ["{{baseUrl}}"],
+                "path": ["api", "users"]
+              }
+            }
+          },
+          {
+            "name": "5) Create user (second) with same dupEmail (expect 409)",
+            "event": [
+              {
+                "listen": "test",
+                "script": {
+                  "type": "text/javascript",
+                  "exec": [
+                    "pm.test('Status is 409', function () {",
+                    "  pm.expect(pm.response.code).to.equal(409);",
+                    "});"
+                  ]
+                }
+              }
+            ],
+            "request": {
+              "method": "POST",
+              "header": [{ "key": "Content-Type", "value": "application/json" }],
+              "body": {
+                "mode": "raw",
+                "raw": "{\n  \"email\": \"{{dupEmail}}\",\n  \"password\": \"test123\",\n  \"name\": \"Second\"\n}"
+              },
+              "url": {
+                "raw": "{{baseUrl}}/api/users",
+                "host": ["{{baseUrl}}"],
+                "path": ["api", "users"]
+              }
+            }
+          }
+        ]
+      },
+      {
+        "name": "Scenario 6 - Not found errors",
+        "item": [
+          {
+            "name": "6) Get non-existent user (99999)",
+            "event": [
+              {
+                "listen": "test",
+                "script": { "type": "text/javascript", "exec": ["pm.test('Status is 404', function () { pm.expect(pm.response.code).to.equal(404); });"] }
+              }
+            ],
+            "request": {
+              "method": "GET",
+              "url": { "raw": "{{baseUrl}}/api/users/99999", "host": ["{{baseUrl}}"], "path": ["api", "users", "99999"] }
+            }
+          },
+          {
+            "name": "6) Update non-existent user (99999)",
+            "event": [
+              {
+                "listen": "test",
+                "script": { "type": "text/javascript", "exec": ["pm.test('Status is 404', function () { pm.expect(pm.response.code).to.equal(404); });"] }
+              }
+            ],
+            "request": {
+              "method": "PUT",
+              "header": [{ "key": "Content-Type", "value": "application/json" }],
+              "body": { "mode": "raw", "raw": "{\n  \"name\": \"Ghost User\"\n}" },
+              "url": { "raw": "{{baseUrl}}/api/users/99999", "host": ["{{baseUrl}}"], "path": ["api", "users", "99999"] }
+            }
+          },
+          {
+            "name": "6) Delete non-existent user (99999)",
+            "event": [
+              {
+                "listen": "test",
+                "script": { "type": "text/javascript", "exec": ["pm.test('Status is 404', function () { pm.expect(pm.response.code).to.equal(404); });"] }
+              }
+            ],
+            "request": {
+              "method": "DELETE",
+              "url": { "raw": "{{baseUrl}}/api/users/99999", "host": ["{{baseUrl}}"], "path": ["api", "users", "99999"] }
+            }
+          }
+        ]
+      },
+      {
+        "name": "Scenario 7 - Wrong endpoints (404)",
+        "item": [
+          {
+            "name": "7) GET /api/nonexistent",
+            "event": [
+              { "listen": "test", "script": { "type": "text/javascript", "exec": ["pm.test('Status is 404', function () { pm.expect(pm.response.code).to.equal(404); });"] } }
+            ],
+            "request": { "method": "GET", "url": { "raw": "{{baseUrl}}/api/nonexistent", "host": ["{{baseUrl}}"], "path": ["api", "nonexistent"] } }
+          },
+          {
+            "name": "7) GET /wrong/path",
+            "event": [
+              { "listen": "test", "script": { "type": "text/javascript", "exec": ["pm.test('Status is 404', function () { pm.expect(pm.response.code).to.equal(404); });"] } }
+            ],
+            "request": { "method": "GET", "url": { "raw": "{{baseUrl}}/wrong/path", "host": ["{{baseUrl}}"], "path": ["wrong", "path"] } }
+          },
+          {
+            "name": "7) POST /api/users/wrong",
+            "event": [
+              { "listen": "test", "script": { "type": "text/javascript", "exec": ["pm.test('Status is 404', function () { pm.expect(pm.response.code).to.equal(404); });"] } }
+            ],
+            "request": {
+              "method": "POST",
+              "header": [{ "key": "Content-Type", "value": "application/json" }],
+              "body": { "mode": "raw", "raw": "{\n  \"any\": \"body\"\n}" },
+              "url": { "raw": "{{baseUrl}}/api/users/wrong", "host": ["{{baseUrl}}"], "path": ["api", "users", "wrong"] }
+            }
+          }
+        ]
+      },
+      {
+        "name": "Scenario 8 - Authentication failures",
+        "item": [
+          {
+            "name": "8) Login wrong password (flow user)",
+            "event": [
+              {
+                "listen": "test",
+                "script": { "type": "text/javascript", "exec": ["pm.test('Status is 400 or 401', function () { pm.expect(pm.response.code).to.be.oneOf([400, 401]); });"] }
+              }
+            ],
+            "request": {
+              "method": "POST",
+              "header": [{ "key": "Content-Type", "value": "application/json" }],
+              "body": { "mode": "raw", "raw": "{\n  \"email\": \"{{flowEmail}}\",\n  \"password\": \"wrongpassword\"\n}" },
+              "url": { "raw": "{{baseUrl}}/api/auth/login", "host": ["{{baseUrl}}"], "path": ["api", "auth", "login"] }
+            }
+          },
+          {
+            "name": "8) Login non-existent user",
+            "event": [
+              {
+                "listen": "test",
+                "script": { "type": "text/javascript", "exec": ["pm.test('Status is 400 or 401', function () { pm.expect(pm.response.code).to.be.oneOf([400, 401]); });"] }
+              }
+            ],
+            "request": {
+              "method": "POST",
+              "header": [{ "key": "Content-Type", "value": "application/json" }],
+              "body": { "mode": "raw", "raw": "{\n  \"email\": \"nonexistent@example.com\",\n  \"password\": \"test123\"\n}" },
+              "url": { "raw": "{{baseUrl}}/api/auth/login", "host": ["{{baseUrl}}"], "path": ["api", "auth", "login"] }
+            }
+          }
+        ]
+      }
+    ]
+  }
+  
